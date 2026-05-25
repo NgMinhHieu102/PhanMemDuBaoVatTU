@@ -503,3 +503,200 @@ async def get_critical_alerts_dashboard(
 
     _cache_set(cache_key, result)
     return result
+
+
+# ── Smart Medical Dashboard Summary ──────────────────────────────────────────
+
+def _classify_risk(case_trend_pct: float, shortage_count: int) -> str:
+    """Đánh giá mức nguy cơ chung dựa trên xu hướng ca và thiếu hụt vật tư."""
+    if case_trend_pct >= 15 and shortage_count >= 5:
+        return "Cao"
+    if case_trend_pct >= 5 or shortage_count >= 2:
+        return "Trung bình"
+    return "Thấp"
+
+
+@router.get("/summary")
+async def get_dashboard_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict:
+    """KPI tổng hợp cho Dashboard theo Smart Medical System spec.
+
+    Trả về:
+    - total_cases_current: tổng số ca tháng hiện tại
+    - cases_trend_pct: % thay đổi so với tháng trước
+    - predicted_cases_next_month: số ca dự báo tháng tới
+    - predicted_trend_pct: % thay đổi so với hiện tại
+    - shortage_supplies_count: số vật tư cảnh báo / nguy hiểm
+    - overall_risk: 'Thấp' | 'Trung bình' | 'Cao'
+    """
+    today = date.today()
+    first_of_this_month = today.replace(day=1)
+    if first_of_this_month.month == 1:
+        first_of_last_month = first_of_this_month.replace(year=first_of_this_month.year - 1, month=12)
+    else:
+        first_of_last_month = first_of_this_month.replace(month=first_of_this_month.month - 1)
+
+    # 1. Tổng ca tháng này
+    total_current = (
+        db.query(func.coalesce(func.sum(DiseaseCase.case_count), 0))
+        .filter(DiseaseCase.recorded_at >= first_of_this_month)
+        .scalar()
+        or 0
+    )
+    total_last_month = (
+        db.query(func.coalesce(func.sum(DiseaseCase.case_count), 0))
+        .filter(
+            DiseaseCase.recorded_at >= first_of_last_month,
+            DiseaseCase.recorded_at < first_of_this_month,
+        )
+        .scalar()
+        or 0
+    )
+    cases_trend_pct = (
+        round(100.0 * (total_current - total_last_month) / total_last_month, 1)
+        if total_last_month > 0
+        else 0.0
+    )
+
+    # 2. Số ca dự báo tháng tới
+    if first_of_this_month.month == 12:
+        first_of_next_month = first_of_this_month.replace(year=first_of_this_month.year + 1, month=1)
+        end_of_next_month = first_of_next_month.replace(month=2) - timedelta(days=1)
+    else:
+        first_of_next_month = first_of_this_month.replace(month=first_of_this_month.month + 1)
+        if first_of_next_month.month == 12:
+            end_of_next_month = first_of_next_month.replace(year=first_of_next_month.year + 1, month=1) - timedelta(days=1)
+        else:
+            end_of_next_month = first_of_next_month.replace(month=first_of_next_month.month + 1) - timedelta(days=1)
+
+    predicted_next = (
+        db.query(func.coalesce(func.sum(DiseaseForecast.predicted_cases), 0))
+        .filter(
+            DiseaseForecast.forecast_date >= first_of_next_month,
+            DiseaseForecast.forecast_date <= end_of_next_month,
+        )
+        .scalar()
+        or 0
+    )
+    predicted_trend_pct = (
+        round(100.0 * (predicted_next - total_current) / total_current, 1)
+        if total_current > 0
+        else 0.0
+    )
+
+    # 3. Số vật tư thiếu hụt (alerts chưa xử lý)
+    shortage_count = (
+        db.query(func.count(Alert.id))
+        .filter(Alert.is_resolved == False)  # noqa: E712
+        .scalar()
+        or 0
+    )
+
+    # 4. Mức nguy cơ chung
+    overall_risk = _classify_risk(predicted_trend_pct, shortage_count)
+
+    return {
+        "total_cases_current": int(total_current),
+        "cases_trend_pct": cases_trend_pct,
+        "predicted_cases_next_month": int(predicted_next),
+        "predicted_trend_pct": predicted_trend_pct,
+        "shortage_supplies_count": int(shortage_count),
+        "overall_risk": overall_risk,
+        "as_of": today.isoformat(),
+    }
+
+
+@router.get("/case-trend")
+async def get_case_trend(
+    months: int = Query(6, ge=3, le=24),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict:
+    """Xu hướng ca bệnh theo tháng cho năm nay vs năm trước."""
+    today = date.today()
+    series_this_year: list[dict] = []
+    series_last_year: list[dict] = []
+
+    for i in range(months - 1, -1, -1):
+        # Compute month-start by going back i months from current month
+        year = today.year
+        month = today.month - i
+        while month <= 0:
+            month += 12
+            year -= 1
+        start = date(year, month, 1)
+        end = date(year + (1 if month == 12 else 0), (month % 12) + 1, 1) - timedelta(days=1)
+
+        this_total = (
+            db.query(func.coalesce(func.sum(DiseaseCase.case_count), 0))
+            .filter(DiseaseCase.recorded_at >= start, DiseaseCase.recorded_at <= end)
+            .scalar()
+            or 0
+        )
+        last_total = (
+            db.query(func.coalesce(func.sum(DiseaseCase.case_count), 0))
+            .filter(
+                DiseaseCase.recorded_at >= start.replace(year=start.year - 1),
+                DiseaseCase.recorded_at <= end.replace(year=end.year - 1),
+            )
+            .scalar()
+            or 0
+        )
+        label = f"T{month}"
+        series_this_year.append({"month": label, "value": int(this_total)})
+        series_last_year.append({"month": label, "value": int(last_total)})
+
+    return {
+        "this_year": series_this_year,
+        "last_year": series_last_year,
+    }
+
+
+@router.get("/demand-vs-stock")
+async def get_demand_vs_stock(
+    top_n: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> List[Dict]:
+    """Top N vật tư có nhu cầu cao nhất, kèm tồn kho hiện tại."""
+    today = date.today()
+    end = today + timedelta(days=60)
+
+    rows = (
+        db.query(
+            MedicalSupply.id,
+            MedicalSupply.name,
+            MedicalSupply.unit,
+            func.coalesce(func.sum(SupplyRequirement.required_quantity), 0).label("demand"),
+        )
+        .join(SupplyRequirement, SupplyRequirement.supply_id == MedicalSupply.id)
+        .filter(
+            SupplyRequirement.requirement_date >= today,
+            SupplyRequirement.requirement_date <= end,
+        )
+        .group_by(MedicalSupply.id, MedicalSupply.name, MedicalSupply.unit)
+        .order_by(func.sum(SupplyRequirement.required_quantity).desc())
+        .limit(top_n)
+        .all()
+    )
+
+    result: list[dict] = []
+    for row in rows:
+        stock = (
+            db.query(func.coalesce(func.sum(Inventory.current_stock), 0))
+            .filter(Inventory.supply_id == row.id)
+            .scalar()
+            or 0
+        )
+        result.append(
+            {
+                "supply_id": row.id,
+                "supply_name": row.name,
+                "unit": row.unit,
+                "demand": int(row.demand),
+                "stock": int(stock),
+            }
+        )
+    return result

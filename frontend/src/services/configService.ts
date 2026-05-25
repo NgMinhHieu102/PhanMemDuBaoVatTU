@@ -51,23 +51,25 @@ export const configService = {
   },
 
   /**
-   * Get shortage thresholds
+   * Get shortage thresholds (global)
    */
-  async getThresholds(): Promise<ShortageThreshold[]> {
-    const response = await api.get<ShortageThreshold[]>('/config/thresholds');
+  async getThresholds(): Promise<ShortageThreshold> {
+    const response = await api.get<ShortageThreshold>('/config/thresholds');
     return response.data;
   },
 
   /**
    * Update shortage thresholds (Admin only)
    */
-  async updateThresholds(data: ThresholdsUpdateRequest): Promise<ShortageThreshold[]> {
-    const response = await api.put<ShortageThreshold[]>('/config/thresholds', data);
+  async updateThresholds(data: ThresholdsUpdateRequest): Promise<ShortageThreshold> {
+    const response = await api.put<ShortageThreshold>('/config/thresholds', data);
     return response.data;
   },
 
   /**
    * Get audit logs for config change history (Admin only)
+   * Backend trả về paginated object AuditLogListResponse {total, page, page_size, items}.
+   * Frontend gọi với param `limit` để giữ tương thích ngược → map sang `page_size`.
    */
   async getAuditLogs(params?: {
     skip?: number;
@@ -78,7 +80,28 @@ export const configService = {
     start_date?: string;
     end_date?: string;
   }): Promise<AuditLog[]> {
-    const response = await api.get<AuditLog[]>('/audit-logs', { params });
-    return response.data;
+    // Map skip/limit → page/page_size
+    const page_size = Math.min(params?.limit ?? 50, 200);
+    const page = params?.skip ? Math.floor(params.skip / page_size) + 1 : 1;
+    const queryParams: Record<string, unknown> = {
+      page,
+      page_size,
+      table_name: params?.table_name,
+      action: params?.action,
+      user_id: params?.user_id,
+      start_date: params?.start_date,
+      end_date: params?.end_date,
+    };
+    // Loại bỏ undefined để không gửi key rỗng
+    Object.keys(queryParams).forEach(
+      (k) => queryParams[k] === undefined && delete queryParams[k],
+    );
+    const response = await api.get<{
+      total: number;
+      page: number;
+      page_size: number;
+      items: AuditLog[];
+    }>('/audit-logs', { params: queryParams });
+    return response.data?.items ?? [];
   },
 };

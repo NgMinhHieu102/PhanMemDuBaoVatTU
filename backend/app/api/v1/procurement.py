@@ -266,17 +266,17 @@ def _export_excel(rows: list) -> Response:
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Procurement Plans"
+    ws.title = "Kế hoạch nhập kho"
 
-    # Header row
+    # Header row (Vietnamese)
     headers = [
-        "Supply Name",
-        "Order Quantity",
-        "Order Date",
-        "Expected Delivery Date",
-        "Estimated Cost (VND)",
-        "Priority",
-        "Status",
+        "Tên vật tư",
+        "SL nhập",
+        "Ngày đặt",
+        "Ngày giao",
+        "Chi phí (VND)",
+        "Mức ưu tiên",
+        "Trạng thái",
     ]
 
     header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
@@ -289,42 +289,60 @@ def _export_excel(rows: list) -> Response:
         cell.font = header_font
         cell.alignment = header_alignment
 
-    # Priority colour map
-    priority_colours = {
-        "critical": "FF0000",
-        "high": "FFA500",
-        "normal": "008000",
+    # Map priority/status sang VN
+    priority_label = {"critical": "Khẩn cấp", "high": "Cao", "normal": "Thường"}
+    status_label = {
+        "pending": "Chờ duyệt",
+        "approved": "Đã duyệt",
+        "cancelled": "Đã huỷ",
+        "ordered": "Đã đặt",
     }
+    priority_colours = {"critical": "DC2626", "high": "EA580C", "normal": "16A34A"}
 
     # Data rows
     for row_num, row in enumerate(rows, 2):
+        prio_key = (row["priority"] or "").lower()
+        status_key = (row["status"] or "").lower()
+
         ws.cell(row=row_num, column=1, value=row["supply_name"])
         ws.cell(row=row_num, column=2, value=row["order_quantity"])
         ws.cell(row=row_num, column=3, value=row["order_date"])
         ws.cell(row=row_num, column=4, value=row["expected_delivery_date"])
         ws.cell(row=row_num, column=5, value=row["estimated_cost"])
-        priority_cell = ws.cell(row=row_num, column=6, value=row["priority"])
-        ws.cell(row=row_num, column=7, value=row["status"])
+        priority_cell = ws.cell(
+            row=row_num, column=6, value=priority_label.get(prio_key, prio_key.capitalize())
+        )
+        ws.cell(
+            row=row_num, column=7, value=status_label.get(status_key, status_key.capitalize())
+        )
 
         # Colour-code priority
-        prio_colour = priority_colours.get(row["priority"].lower(), "000000")
+        prio_colour = priority_colours.get(prio_key, "000000")
         priority_cell.font = Font(color=prio_colour, bold=True)
 
     # Auto-fit columns
-    for col_num in range(1, len(headers) + 1):
-        col_letter = get_column_letter(col_num)
-        ws.column_dimensions[col_letter].width = 22
+    widths = [38, 10, 12, 12, 16, 14, 14]
+    for col_num, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col_num)].width = w
 
     # Write to buffer
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
 
-    filename = f"procurement_plans_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    from urllib.parse import quote as _quote
+    from app.api.v1.reports import _ascii_filename
+
+    name = f"ke_hoach_nhap_kho_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{_ascii_filename(name)}"; '
+                f"filename*=UTF-8''{_quote(name)}"
+            )
+        },
     )
 
 
@@ -352,31 +370,66 @@ def _export_pdf(rows: list) -> Response:
         bottomMargin=1.5 * cm,
     )
 
+    # Đăng ký font Unicode (DejaVu) cho tiếng Việt — dùng chung với reports module
+    from app.api.v1 import reports as _reports
+
+    _reports._register_unicode_fonts()
+    PDF_FONT_BOLD = _reports.PDF_FONT_BOLD
+    PDF_FONT_REGULAR = _reports.PDF_FONT_REGULAR
+
     styles = getSampleStyleSheet()
+    _reports._patch_styles_for_unicode(styles)
     story = []
 
-    # Title
+    # Title (Vietnamese)
     title = Paragraph(
-        f"Procurement Plans – Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"Báo cáo Kế hoạch Nhập kho - tạo lúc {datetime.now().strftime('%d/%m/%Y %H:%M')}",
         styles["Title"],
     )
     story.append(title)
     story.append(Spacer(1, 0.4 * cm))
 
-    # Table header
+    # Cell style cho text dài (tự wrap)
+    from reportlab.lib.styles import ParagraphStyle
+    cell_style = ParagraphStyle(
+        "PlanCell",
+        parent=styles["Normal"],
+        fontName=PDF_FONT_REGULAR,
+        fontSize=8,
+        leading=10,
+        wordWrap="CJK",
+    )
+
+    # Map priority + status sang tiếng Việt
+    priority_label = {
+        "critical": "Khẩn cấp",
+        "high": "Cao",
+        "normal": "Thường",
+        "": "—",
+    }
+    status_label = {
+        "pending": "Chờ duyệt",
+        "approved": "Đã duyệt",
+        "cancelled": "Đã huỷ",
+        "ordered": "Đã đặt",
+    }
+
+    # Table header (Vietnamese)
     table_data = [
-        ["Supply Name", "Qty", "Order Date", "Delivery Date", "Est. Cost", "Priority", "Status"],
+        ["Tên vật tư", "SL nhập", "Ngày đặt", "Ngày giao", "Chi phí (VND)", "Mức ưu tiên", "Trạng thái"],
     ]
 
     for row in rows:
+        prio_key = (row["priority"] or "").lower()
+        status_key = (row["status"] or "").lower()
         table_data.append([
-            row["supply_name"],
+            Paragraph(row["supply_name"], cell_style),
             str(row["order_quantity"]),
             row["order_date"],
             row["expected_delivery_date"],
             f"{row['estimated_cost']:,.0f}",
-            row["priority"].capitalize(),
-            row["status"].capitalize(),
+            priority_label.get(prio_key, prio_key.capitalize() if prio_key else "—"),
+            status_label.get(status_key, status_key.capitalize() if status_key else "—"),
         ])
 
     col_widths = [6 * cm, 2 * cm, 3 * cm, 3 * cm, 3.5 * cm, 2.5 * cm, 3 * cm]
@@ -395,12 +448,12 @@ def _export_pdf(rows: list) -> Response:
         # Header
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E79")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, 0), PDF_FONT_BOLD),
         ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         # Data rows
-        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTNAME", (0, 1), (-1, -1), PDF_FONT_REGULAR),
         ("FONTSIZE", (0, 1), (-1, -1), 8),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EBF3FB")]),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -415,7 +468,7 @@ def _export_pdf(rows: list) -> Response:
         prio = row["priority"].lower()
         prio_colour = priority_colour_map.get(prio, colors.black)
         table_style.append(("TEXTCOLOR", (5, row_num), (5, row_num), prio_colour))
-        table_style.append(("FONTNAME", (5, row_num), (5, row_num), "Helvetica-Bold"))
+        table_style.append(("FONTNAME", (5, row_num), (5, row_num), PDF_FONT_BOLD))
 
     table.setStyle(TableStyle(table_style))
     story.append(table)
@@ -423,11 +476,19 @@ def _export_pdf(rows: list) -> Response:
     doc.build(story)
     buf.seek(0)
 
-    filename = f"procurement_plans_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    from urllib.parse import quote as _quote
+    from app.api.v1.reports import _ascii_filename
+
+    name = f"ke_hoach_nhap_kho_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     return Response(
         content=buf.getvalue(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{_ascii_filename(name)}"; '
+                f"filename*=UTF-8''{_quote(name)}"
+            )
+        },
     )
 
 

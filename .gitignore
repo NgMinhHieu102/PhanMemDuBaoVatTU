@@ -106,3 +106,7 @@ frontend/.vite/
 # Backend models cache
 backend/app/ai_engine/models/checkpoints/
 backend/app/ai_engine/models/saved_models/*.pkl
+
+# Playwright test results
+frontend/test-results/
+frontend/playwright-report/

@@ -12,6 +12,8 @@ export interface DiseaseCase {
   location: string;
   severity?: string;
   data_source?: string;
+  note?: string | null;
+  created_by?: string | null;
   created_at: string;
 }
 
@@ -22,6 +24,7 @@ export interface DiseaseCaseCreate {
   location: string;
   severity?: string;
   data_source?: string;
+  note?: string;
 }
 
 export interface DiseaseStatistic {

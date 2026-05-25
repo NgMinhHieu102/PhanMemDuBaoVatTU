@@ -1,19 +1,20 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
-  Package,
+  HeartPulse,
+  CloudSun,
   TrendingUp,
-  Bell,
-  Activity,
+  Boxes,
+  ShoppingCart,
   FileBarChart,
   Settings,
-  ChevronLeft,
-  ChevronRight,
+  HelpCircle,
+  LogOut,
+  Plus,
   Stethoscope,
 } from 'lucide-react';
-import { useUIStore } from '../../store/uiStore';
 import { useAuthStore } from '../../store/authStore';
-import { ROUTES, APP_NAME } from '../../utils/constants';
+import { ROUTES } from '../../utils/constants';
 import { cn } from '../../utils/cn';
 
 interface NavItem {
@@ -25,81 +26,77 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Dashboard', path: ROUTES.DASHBOARD, icon: LayoutDashboard },
-  { label: 'Tồn kho', path: ROUTES.INVENTORY, icon: Package },
-  { label: 'Dự báo', path: ROUTES.FORECASTING, icon: TrendingUp },
-  { label: 'Cảnh báo', path: ROUTES.ALERTS, icon: Bell },
-  { label: 'Dịch tễ học', path: ROUTES.EPIDEMIOLOGY, icon: Activity },
+  { label: 'Dữ liệu bệnh', path: ROUTES.EPIDEMIOLOGY, icon: HeartPulse },
+  { label: 'Dữ liệu thời tiết', path: ROUTES.WEATHER, icon: CloudSun },
+  { label: 'Phân tích & Dự báo', path: ROUTES.FORECASTING, icon: TrendingUp },
+  { label: 'Vật tư y tế', path: ROUTES.INVENTORY, icon: Boxes },
+  { label: 'Đề xuất nhập kho', path: ROUTES.ALERTS, icon: ShoppingCart },
   { label: 'Báo cáo', path: ROUTES.REPORTS, icon: FileBarChart },
-  { label: 'Cài đặt', path: ROUTES.SETTINGS, icon: Settings, adminOnly: true },
+  { label: 'Quản trị', path: ROUTES.SETTINGS, icon: Settings, adminOnly: true },
 ];
 
 export default function Sidebar() {
-  const { isSidebarCollapsed, toggleSidebarCollapsed } = useUIStore();
-  const { user } = useAuthStore();
+  const { user, logout } = useAuthStore();
   const isAdmin = user?.role === 'Administrator';
 
   return (
-    <aside
-      className={cn(
-        'flex flex-col h-full bg-neutral-900 text-white transition-all duration-300 ease-in-out',
-        isSidebarCollapsed ? 'w-16' : 'w-64'
-      )}
-    >
+    <aside className="flex flex-col h-full w-64 bg-white border-r border-neutral-200">
       {/* Logo */}
-      <div className="flex items-center h-16 px-4 border-b border-neutral-700 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="flex items-center justify-center w-8 h-8 bg-primary-600 rounded-lg shrink-0">
-            <Stethoscope size={18} className="text-white" />
-          </div>
-          {!isSidebarCollapsed && (
-            <span className="font-bold text-sm truncate">{APP_NAME}</span>
-          )}
+      <div className="flex items-center gap-3 h-20 px-5 shrink-0">
+        <div className="flex items-center justify-center w-10 h-10 bg-blue-600 rounded-xl shrink-0">
+          <Stethoscope size={20} className="text-white" />
+        </div>
+        <div className="min-w-0">
+          <p className="font-bold text-sm text-neutral-900 leading-tight">Smart Medical</p>
+          <p className="text-xs text-neutral-500 leading-tight">Hệ thống quản lý y tế</p>
         </div>
       </div>
 
+      {/* CTA */}
+      <div className="px-4 pb-4">
+        <button className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition shadow-sm">
+          <Plus size={16} /> Tạo kế hoạch mới
+        </button>
+      </div>
+
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-4 px-2">
+      <nav className="flex-1 overflow-y-auto px-3">
         <ul className="space-y-1">
-          {navItems.filter((item) => !item.adminOnly || isAdmin).map((item) => (
-            <li key={item.path}>
-              <NavLink
-                to={item.path}
-                title={isSidebarCollapsed ? item.label : undefined}
-                className={({ isActive }) =>
-                  cn(
-                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150',
-                    isActive
-                      ? 'bg-primary-600 text-white'
-                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-white',
-                    isSidebarCollapsed && 'justify-center px-2'
-                  )
-                }
-              >
-                <item.icon size={18} className="shrink-0" />
-                {!isSidebarCollapsed && (
+          {navItems
+            .filter((item) => !item.adminOnly || isAdmin)
+            .map((item) => (
+              <li key={item.path}>
+                <NavLink
+                  to={item.path}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                      isActive
+                        ? 'bg-blue-50 text-blue-700'
+                        : 'text-neutral-600 hover:bg-neutral-50',
+                    )
+                  }
+                >
+                  <item.icon size={18} className="shrink-0" />
                   <span className="truncate">{item.label}</span>
-                )}
-              </NavLink>
-            </li>
-          ))}
+                </NavLink>
+              </li>
+            ))}
         </ul>
       </nav>
 
-      {/* Collapse toggle */}
-      <div className="p-2 border-t border-neutral-700 shrink-0">
+      {/* Footer actions */}
+      <div className="border-t border-neutral-100 px-3 py-3 space-y-1">
+        <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-neutral-600 hover:bg-neutral-50">
+          <HelpCircle size={18} />
+          Hỗ trợ
+        </button>
         <button
-          onClick={toggleSidebarCollapsed}
-          className="flex items-center justify-center w-full p-2 rounded-lg text-neutral-400 hover:bg-neutral-800 hover:text-white transition-colors"
-          title={isSidebarCollapsed ? 'Mở rộng' : 'Thu gọn'}
+          onClick={logout}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-neutral-600 hover:bg-neutral-50"
         >
-          {isSidebarCollapsed ? (
-            <ChevronRight size={18} />
-          ) : (
-            <div className="flex items-center gap-2 w-full">
-              <ChevronLeft size={18} />
-              <span className="text-sm">Thu gọn</span>
-            </div>
-          )}
+          <LogOut size={18} />
+          Đăng xuất
         </button>
       </div>
     </aside>

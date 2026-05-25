@@ -92,7 +92,7 @@ async def health_check():
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────
-from app.api.v1 import auth, users, supplies, inventory, environmental, disease_cases, forecasts, supply_requirements, alerts, procurement, dashboard, reports, config, audit_logs, forecast_v2
+from app.api.v1 import auth, users, supplies, inventory, environmental, disease_cases, supply_requirements, alerts, procurement, dashboard, reports, config, audit_logs, forecast_analysis, admin_catalog
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
@@ -100,7 +100,6 @@ app.include_router(supplies.router, prefix="/api/v1/supplies", tags=["medical-su
 app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["inventory"])
 app.include_router(environmental.router, prefix="/api/v1/environmental", tags=["environmental-data"])
 app.include_router(disease_cases.router, prefix="/api/v1/disease-cases", tags=["disease-cases"])
-app.include_router(forecasts.router, prefix="/api/v1/forecasts", tags=["forecasts"])
 app.include_router(supply_requirements.router, prefix="/api/v1/supply-requirements", tags=["supply-requirements"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["alerts"])
 app.include_router(procurement.router, prefix="/api/v1/procurement", tags=["procurement"])
@@ -108,4 +107,5 @@ app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["dashboar
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["reports"])
 app.include_router(config.router, prefix="/api/v1/config", tags=["configuration"])
 app.include_router(audit_logs.router, prefix="/api/v1", tags=["audit-logs"])
-app.include_router(forecast_v2.router, prefix="/api/v1/forecast-v2", tags=["forecast-v2"])
+app.include_router(forecast_analysis.router, prefix="/api/v1/forecast", tags=["forecast-analysis"])
+app.include_router(admin_catalog.router, prefix="/api/v1/admin", tags=["admin-catalog"])

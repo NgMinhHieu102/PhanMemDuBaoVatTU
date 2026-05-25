@@ -1,5 +1,5 @@
 """Disease Case model."""
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Text
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -16,4 +16,6 @@ class DiseaseCase(Base):
     location = Column(String(100), nullable=False, index=True)
     severity = Column(String(20))
     data_source = Column(String(100))
+    note = Column(Text)  # Ghi chú tự do (spec 3.3)
+    created_by = Column(String(100))  # username người tạo (spec 3.3)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

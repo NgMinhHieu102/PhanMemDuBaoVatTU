@@ -3,74 +3,50 @@ import { dashboardService } from '../services/dashboardService';
 import { DASHBOARD_REFRESH_INTERVAL_MS } from '../utils/constants';
 import { useAuthStore } from '../store/authStore';
 
-/**
- * Hook for fetching dashboard overview metrics
- */
-export function useDashboardOverview() {
+export function useDashboardSummary() {
   const { isAuthenticated } = useAuthStore();
-  
   return useQuery({
-    queryKey: ['dashboard', 'overview'],
-    queryFn: () => dashboardService.getOverview(),
+    queryKey: ['dashboard', 'summary'],
+    queryFn: () => dashboardService.getSummary(),
     refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
     staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
+    enabled: isAuthenticated,
     retry: false,
     refetchOnWindowFocus: false,
-    refetchIntervalInBackground: false,
-    enabled: isAuthenticated,
   });
 }
 
-/**
- * Hook for fetching supply vs demand chart data
- */
-export function useDashboardSupplyDemand() {
+export function useCaseTrend(months = 6) {
   const { isAuthenticated } = useAuthStore();
-
   return useQuery({
-    queryKey: ['dashboard', 'supply-demand'],
-    queryFn: () => dashboardService.getSupplyDemand(),
-    refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
-    staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
+    queryKey: ['dashboard', 'case-trend', months],
+    queryFn: () => dashboardService.getCaseTrend(months),
+    enabled: isAuthenticated,
     retry: false,
     refetchOnWindowFocus: false,
-    refetchIntervalInBackground: false,
-    enabled: isAuthenticated,
   });
 }
 
-/**
- * Hook for fetching risk status breakdown for donut chart
- */
-export function useDashboardRiskStatus() {
+export function useDemandVsStock(topN = 5) {
   const { isAuthenticated } = useAuthStore();
-
   return useQuery({
-    queryKey: ['dashboard', 'risk-status'],
-    queryFn: () => dashboardService.getRiskStatus(),
-    refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
-    staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
+    queryKey: ['dashboard', 'demand-vs-stock', topN],
+    queryFn: () => dashboardService.getDemandVsStock(topN),
+    enabled: isAuthenticated,
     retry: false,
     refetchOnWindowFocus: false,
-    refetchIntervalInBackground: false,
-    enabled: isAuthenticated,
   });
 }
 
-/**
- * Hook for fetching critical alerts for the dashboard table
- */
 export function useDashboardCriticalAlerts(limit = 5) {
   const { isAuthenticated } = useAuthStore();
-
   return useQuery({
     queryKey: ['dashboard', 'critical-alerts', limit],
     queryFn: () => dashboardService.getCriticalAlerts(limit),
     refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
     staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
+    enabled: isAuthenticated,
     retry: false,
     refetchOnWindowFocus: false,
-    refetchIntervalInBackground: false,
-    enabled: isAuthenticated,
   });
 }

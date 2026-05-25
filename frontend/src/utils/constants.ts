@@ -80,6 +80,7 @@ export const ROUTES = {
   FORECASTING: '/forecasting',
   ALERTS: '/alerts',
   EPIDEMIOLOGY: '/epidemiology',
+  WEATHER: '/weather',
   REPORTS: '/reports',
   SETTINGS: '/settings',
 } as const;

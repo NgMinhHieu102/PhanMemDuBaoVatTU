@@ -21,11 +21,10 @@ export interface ConversionRatio {
 }
 
 export interface ShortageThreshold {
-  supply_id: number;
-  supply_name?: string;
-  critical_days: number;   // shortage within N days → critical
-  high_days: number;       // shortage within N days → high
-  medium_days: number;     // shortage within N days → medium
+  /** Global threshold (per-supply chưa được hỗ trợ ở backend) */
+  critical_days: number;
+  high_days: number;
+  medium_days: number;
 }
 
 export interface ConfigUpdateRequest {
@@ -42,12 +41,9 @@ export interface ConversionRatiosUpdateRequest {
 }
 
 export interface ThresholdsUpdateRequest {
-  thresholds: Array<{
-    supply_id: number;
-    critical_days: number;
-    high_days: number;
-    medium_days: number;
-  }>;
+  critical_days: number;
+  high_days: number;
+  medium_days: number;
 }
 
 // Audit log type (for change history)

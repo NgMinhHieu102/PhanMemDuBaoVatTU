@@ -1,342 +1,380 @@
-import { useEffect, useState, useMemo } from 'react';
-import { Bell, RefreshCw, ShoppingCart, Loader2, CheckCircle } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { Download, Plus, Loader2, FileSpreadsheet } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
-import Button from '../components/common/Button';
-import LoadingSpinner from '../components/common/LoadingSpinner';
+import { useSupplyRequirementsSummary } from '../hooks/useSupplyRequirements';
+import { useSafetyRate } from '../hooks/useAdminCatalog';
+import { SUPPLY_CATEGORY_LABELS } from '../utils/constants';
 import api from '../services/api';
-import { forecastV2Service } from '../services/forecastV2Service';
-import type { SuggestionItem } from '../services/forecastV2Service';
+import StatusKpiCards, {
+  type StockClass,
+} from '../components/alerts/StatusKpiCards';
+import AlertsToolbar, {
+  type AlertsFilters,
+} from '../components/alerts/AlertsToolbar';
+import AlertsTable, {
+  type AlertRow,
+} from '../components/alerts/AlertsTable';
+import CalculationSidebar from '../components/alerts/CalculationSidebar';
 
-interface SummaryData {
-  total_items?: number;
-  critical?: number;
-  low?: number;
-  warning?: number;
-  sufficient?: number;
-}
+const PAGE_SIZE = 5;
+const DEFAULT_SAFETY_RATE = 0.15; // fallback nếu admin chưa cấu hình
 
+/** Module 7 — Cảnh báo & Đề xuất nhập kho */
 export default function Alerts() {
-  const queryClient = useQueryClient();
   const { setPageTitle } = useUIStore();
 
-  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
-  const [summary, setSummary] = useState<SummaryData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [imported, setImported] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'shortage' | 'safe'>('shortage');
-
   useEffect(() => {
-    setPageTitle('Cảnh báo');
-    initSuggestions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setPageTitle('Cảnh báo & Đề xuất nhập kho');
+  }, [setPageTitle]);
 
-  /** Chỉ load suggestions nếu service đã train xong, tránh chờ vài chục giây. */
-  const initSuggestions = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const status = await forecastV2Service.getStatus();
-      if (!status.is_trained) {
-        setError(
-          'Mô hình AI chưa được huấn luyện. Vào trang Dự báo và bấm "Train Model" trước khi xem cảnh báo.',
-        );
-        setLoading(false);
-        return;
-      }
-      await loadSuggestions();
-    } catch (err: any) {
-      setError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Không kiểm tra được trạng thái mô hình.',
-      );
-      setLoading(false);
-    }
-  };
+  const [filters, setFilters] = useState<AlertsFilters>({
+    search: '',
+    status: 'all',
+    category: 'all',
+  });
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  const loadSuggestions = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // Lấy tồn kho hiện tại từ DB để pipeline so sánh đúng
-      const currentInventory = await forecastV2Service.getInventoryForComparison();
+  // Action states
+  const [creatingPlan, setCreatingPlan] = useState(false);
+  const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
+  const [planResult, setPlanResult] = useState<{
+    plans_generated: number;
+    critical_plans: number;
+    high_plans: number;
+    normal_plans: number;
+  } | null>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
-      const result = await forecastV2Service.runFullPipeline({
-        prev_month_weather: { temp: 30, humidity: 78, rainfall: 180, aqi: 95 },
-        forecast_weather: { temp: 28, humidity: 82, rainfall: 312, aqi: 75 },
-        target_month: new Date().getMonth() + 2 > 12 ? 1 : new Date().getMonth() + 2,
-        current_inventory: currentInventory,
-        top_n_supplies: 50,
-      });
-      const inv = result.result.inventory_comparison;
-      if (inv) {
-        setSuggestions(inv.suggestions || []);
-        setSummary(inv.summary || null);
-      } else {
-        setSuggestions([]);
-        setSummary(null);
-      }
-      setImported(false);
-    } catch (err: any) {
-      setError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Không tải được cảnh báo. Hãy chạy Dự báo (bước 1-4) trước.',
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data, isLoading } = useSupplyRequirementsSummary();
+  const { data: adminSafetyRate } = useSafetyRate();
+  const safetyRate = adminSafetyRate ?? DEFAULT_SAFETY_RATE;
 
-  const handleImportToInventory = async () => {
-    const items = suggestions
-      .filter((s) => (s.order_quantity || 0) > 0)
-      .map((s) => ({
-        drug_name: s.DrugName || '',
-        quantity: s.order_quantity || 0,
-        unit: s.UnitOfMeasure || '',
-      }));
-    if (items.length === 0) return;
+  // Map summary items → AlertRow + classify status theo spec 7.5
+  const allRows: AlertRow[] = useMemo(() => {
+    if (!data) return [];
+    return data.items.map((it) => {
+      const stock = it.current_stock ?? 0;
+      const demand = it.total_required_quantity || 0;
+      const status = classifyStock(stock, demand);
+      const safety = Math.round(demand * safetyRate);
+      const recommended = Math.max(0, demand + safety - stock);
+      return {
+        id: it.supply_id,
+        supply_id: it.supply_id,
+        name: it.supply_name,
+        code: buildCode(it.supply_category, it.supply_id),
+        unit: it.supply_unit ?? '',
+        currentStock: stock,
+        demand,
+        recommendedOrder: recommended,
+        status,
+      };
+    });
+  }, [data, safetyRate]);
 
-    setImporting(true);
-    try {
-      const res: any = await forecastV2Service.importToInventory(items);
-      queryClient.invalidateQueries({ queryKey: ['alerts'] });
-      queryClient.invalidateQueries({ queryKey: ['inventory'] });
-      const resolved = res?.alerts_resolved ?? 0;
-      alert(
-        `✅ Đã nhập ${items.length} vật tư vào tồn kho` +
-          (resolved ? ` và xử lý ${resolved} cảnh báo!` : '!'),
-      );
-      setImported(true);
-      // Cũng yêu cầu backend re-evaluate alert thread
-      try {
-        await api.post('/alerts/check');
-      } catch {
-        /* không ảnh hưởng UX */
-      }
-      // Reload suggestions để bảng phản ánh trạng thái mới
-      loadSuggestions();
-    } catch (err: any) {
-      alert('Lỗi: ' + (err?.message || ''));
-    } finally {
-      setImporting(false);
-    }
-  };
+  const counts = useMemo(() => {
+    const acc: Record<StockClass, number> = {
+      critical: 0,
+      warning: 0,
+      safe: 0,
+      overstock: 0,
+    };
+    allRows.forEach((r) => {
+      acc[r.status]++;
+    });
+    return acc;
+  }, [allRows]);
 
+  // Categories cho dropdown
+  const categoryOptions = useMemo(() => {
+    const set = new Set<string>();
+    allRows.forEach((r) => {
+      const cat = data?.items.find((i) => i.supply_id === r.id)?.supply_category;
+      if (cat) set.add(cat);
+    });
+    return Array.from(set).map((key) => ({
+      key,
+      label: SUPPLY_CATEGORY_LABELS[key] ?? key,
+    }));
+  }, [allRows, data]);
+
+  // Áp filter
   const filtered = useMemo(() => {
-    if (statusFilter === 'all') return suggestions;
-    if (statusFilter === 'safe') return suggestions.filter((s) => s.status === 'An toàn');
-    return suggestions.filter((s) => s.status !== 'An toàn');
-  }, [suggestions, statusFilter]);
+    const q = filters.search.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (q && !`${r.code} ${r.name}`.toLowerCase().includes(q)) return false;
+      if (filters.status !== 'all' && r.status !== filters.status) return false;
+      if (filters.category !== 'all') {
+        const item = data?.items.find((i) => i.supply_id === r.id);
+        if (item?.supply_category !== filters.category) return false;
+      }
+      return true;
+    });
+  }, [allRows, filters, data]);
 
-  const shortageCount = suggestions.filter((s) => s.status !== 'An toàn').length;
+  // Paginate
+  const paged = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, page]);
 
-  // ── UI ────────────────────────────────────────────────────────────────────
+  // Reset page khi đổi filter
+  useEffect(() => {
+    setPage(1);
+  }, [filters.search, filters.status, filters.category]);
 
-  if (loading && suggestions.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <LoadingSpinner />
-      </div>
-    );
-  }
+  const onKpiSelect = (key: StockClass | 'all') => {
+    setFilters((f) => ({ ...f, status: key }));
+  };
+
+  const toggleRow = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = (checked: boolean) => {
+    if (!checked) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(paged.map((r) => r.id)));
+  };
+
+  // ── Spec 7.6: Tạo kế hoạch tổng thể ──────────────────────────────────────
+  const handleCreatePlan = async () => {
+    if (creatingPlan) return;
+    try {
+      setCreatingPlan(true);
+      const res = await api.post('/procurement/generate', {
+        forecast_days: 30,
+      });
+      const d = res.data ?? {};
+      setPlanResult({
+        plans_generated: d.plans_generated ?? 0,
+        critical_plans: d.critical_plans ?? 0,
+        high_plans: d.high_plans ?? 0,
+        normal_plans: d.normal_plans ?? 0,
+      });
+      setSelected(new Set()); // clear selection
+    } catch (err: any) {
+      alert(
+        'Không thể tạo kế hoạch: ' +
+          (err?.response?.data?.detail || err.message || 'không rõ lỗi'),
+      );
+    } finally {
+      setCreatingPlan(false);
+    }
+  };
+
+  // ── Spec 7.2 #9: Xuất kế hoạch PDF/Excel ────────────────────────────────
+  const handleExport = async (format: 'pdf' | 'excel') => {
+    if (exporting) return;
+    setShowExportMenu(false);
+    try {
+      setExporting(format);
+      const res = await api.get('/procurement/export', {
+        params: { format },
+        responseType: 'blob',
+      });
+      const ext = format === 'pdf' ? 'pdf' : 'xlsx';
+      const mime =
+        format === 'pdf'
+          ? 'application/pdf'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const blob = new Blob([res.data], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `procurement_plans_${new Date()
+        .toISOString()
+        .replace(/[-:T]/g, '')
+        .slice(0, 14)}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert('Không thể xuất file: ' + (err?.message || ''));
+    } finally {
+      setExporting(null);
+    }
+  };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-5">
+      {/* Page header */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
-            <Bell className="w-6 h-6 text-blue-600" />
-            <h2 className="text-xl font-semibold text-neutral-900">Cảnh báo Thiếu hụt</h2>
-            {shortageCount > 0 && (
-              <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-red-500 text-white text-xs font-bold">
-                {shortageCount}
-              </span>
-            )}
-          </div>
+          <h2 className="text-3xl font-extrabold text-neutral-900">
+            Cảnh báo & Đề xuất nhập kho
+          </h2>
           <p className="text-sm text-neutral-500 mt-1">
-            Danh sách vật tư thiếu hụt theo dự báo so với tồn kho hiện tại. Nếu bạn đã nhập từ
-            trang <span className="font-medium text-neutral-700">Dự báo</span>, bảng này sẽ tự
-            cập nhật về trạng thái an toàn.
+            Quản lý định mức vật tư y tế theo dự báo nhu cầu.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            onClick={loadSuggestions}
-            isLoading={loading}
-            className="inline-flex items-center gap-2"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Làm mới
-          </Button>
-          {shortageCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2.5 relative">
+          <div className="relative">
             <button
-              onClick={handleImportToInventory}
-              disabled={importing}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+              type="button"
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              disabled={!!exporting}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-neutral-200 rounded-xl text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-60"
             >
-              {importing ? (
+              {exporting ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <ShoppingCart className="w-4 h-4" />
+                <Download className="w-4 h-4" />
               )}
-              Nhập đề xuất vào Tồn kho
+              {exporting === 'pdf'
+                ? 'Đang xuất PDF...'
+                : exporting === 'excel'
+                ? 'Đang xuất Excel...'
+                : 'Xuất báo cáo PDF/Excel'}
             </button>
-          )}
+            {showExportMenu && (
+              <div className="absolute right-0 mt-1 z-20 w-48 bg-white border border-neutral-200 rounded-xl shadow-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => handleExport('pdf')}
+                  className="w-full text-left px-4 py-2.5 text-sm text-neutral-700 hover:bg-neutral-50 flex items-center gap-2"
+                >
+                  <Download className="w-4 h-4 text-red-500" />
+                  Xuất PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExport('excel')}
+                  className="w-full text-left px-4 py-2.5 text-sm text-neutral-700 hover:bg-neutral-50 flex items-center gap-2 border-t border-neutral-100"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                  Xuất Excel
+                </button>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={handleCreatePlan}
+            disabled={creatingPlan}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {creatingPlan ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Plus className="w-4 h-4" />
+            )}
+            {creatingPlan ? 'Đang tạo kế hoạch...' : 'Tạo kế hoạch tổng thể'}
+          </button>
         </div>
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
+      {/* Main grid: left content + right sidebar */}
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5">
+        <div className="space-y-5 min-w-0">
+          <StatusKpiCards counts={counts} active={filters.status as StockClass | 'all'} onSelect={onKpiSelect} />
 
-      {/* Empty / fully fulfilled */}
-      {!loading && !error && shortageCount === 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-6 flex items-center gap-3">
-          <CheckCircle className="w-6 h-6 text-green-600 shrink-0" />
-          <div>
-            <p className="text-sm font-semibold text-green-800">
-              Tất cả vật tư đang ở mức an toàn
-            </p>
-            <p className="text-xs text-green-700 mt-0.5">
-              {imported
-                ? 'Bạn vừa nhập đề xuất vào tồn kho. Cảnh báo đã được xử lý.'
-                : 'Không có vật tư nào thiếu hụt theo dự báo hiện tại.'}
-            </p>
+          <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+            <AlertsToolbar
+              filters={filters}
+              onChange={setFilters}
+              categories={categoryOptions}
+            />
+            <AlertsTable
+              rows={paged}
+              isLoading={isLoading}
+              total={filtered.length}
+              page={page}
+              pageSize={PAGE_SIZE}
+              onPageChange={setPage}
+              selectedIds={selected}
+              onToggleRow={toggleRow}
+              onToggleAll={toggleAll}
+            />
           </div>
         </div>
-      )}
 
-      {/* Stats summary */}
-      {summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatCard
-            label="Nguy hiểm"
-            value={summary.critical || 0}
-            tone="red"
-          />
-          <StatCard
-            label="Cảnh báo"
-            value={summary.low || 0}
-            tone="yellow"
-          />
-          <StatCard
-            label="Cần bổ sung"
-            value={summary.warning || 0}
-            tone="orange"
-          />
-          <StatCard
-            label="An toàn"
-            value={summary.sufficient || 0}
-            tone="green"
-          />
+        <div className="xl:sticky xl:top-4 xl:self-start">
+          <CalculationSidebar safetyRate={safetyRate} />
         </div>
-      )}
+      </div>
 
-      {/* Filter tabs */}
-      {suggestions.length > 0 && (
-        <div className="flex gap-2 text-sm">
-          <FilterTab
-            active={statusFilter === 'shortage'}
-            onClick={() => setStatusFilter('shortage')}
-            label={`Thiếu hụt (${shortageCount})`}
-          />
-          <FilterTab
-            active={statusFilter === 'safe'}
-            onClick={() => setStatusFilter('safe')}
-            label={`An toàn (${suggestions.length - shortageCount})`}
-          />
-          <FilterTab
-            active={statusFilter === 'all'}
-            onClick={() => setStatusFilter('all')}
-            label={`Tất cả (${suggestions.length})`}
-          />
-        </div>
-      )}
-
-      {/* Procurement table — same look as Forecasting Step 5 */}
-      {filtered.length > 0 && (
-        <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-gray-50">
-                  <th className="text-left px-3 py-2 w-12">#</th>
-                  <th className="text-left px-3 py-2">Vật tư / Thuốc</th>
-                  <th className="text-center px-3 py-2">Trạng thái</th>
-                  <th className="text-right px-3 py-2">Tồn kho</th>
-                  <th className="text-right px-3 py-2">Nhu cầu</th>
-                  <th className="text-right px-3 py-2">Đề xuất nhập</th>
-                  <th className="text-center px-3 py-2">Ưu tiên</th>
-                  <th className="text-left px-3 py-2">Hành động</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((item, idx) => {
-                  const statusColors: Record<string, string> = {
-                    'Nguy hiểm': 'bg-red-100 text-red-800',
-                    'Cảnh báo': 'bg-yellow-100 text-yellow-800',
-                    'Cần bổ sung': 'bg-orange-100 text-orange-700',
-                    'An toàn': 'bg-green-100 text-green-800',
-                  };
-                  const priorityColors: Record<string, string> = {
-                    CAO: 'bg-red-100 text-red-700',
-                    'TRUNG BÌNH': 'bg-yellow-100 text-yellow-700',
-                    THẤP: 'bg-gray-100 text-gray-600',
-                  };
-                  return (
-                    <tr key={idx} className="border-b hover:bg-gray-50">
-                      <td className="px-3 py-2 text-gray-500">{idx + 1}</td>
-                      <td className="px-3 py-2 max-w-xs truncate" title={item.DrugName}>
-                        {item.DrugName?.length > 55
-                          ? `${item.DrugName.slice(0, 55)}…`
-                          : item.DrugName}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded text-xs font-medium ${
-                            statusColors[item.status] || ''
-                          }`}
-                        >
-                          {item.status}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        {item.current_stock?.toLocaleString() ?? 0}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        {Math.round(item.safety_demand || 0).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2 text-right font-bold text-blue-700">
-                        {item.order_quantity > 0
-                          ? item.order_quantity.toLocaleString()
-                          : '—'}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded text-xs font-medium ${
-                            priorityColors[item.priority] || ''
-                          }`}
-                        >
-                          {item.priority}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-xs font-medium">{item.action}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {/* Plan result modal */}
+      {planResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b border-neutral-100">
+              <h3 className="text-base font-semibold text-neutral-900">
+                Kế hoạch nhập kho đã tạo
+              </h3>
+              <p className="text-xs text-neutral-500 mt-0.5">
+                Hệ thống vừa gom các vật tư cần nhập thành 1 kế hoạch tổng thể.
+              </p>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-center">
+                <p className="text-[11px] uppercase font-semibold text-blue-700">
+                  Tổng số kế hoạch
+                </p>
+                <p className="text-3xl font-extrabold text-blue-700 mt-1 tabular-nums">
+                  {planResult.plans_generated}
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg bg-red-50 border border-red-100 p-2.5 text-center">
+                  <p className="text-[10px] uppercase font-semibold text-red-700">
+                    Khẩn cấp
+                  </p>
+                  <p className="text-xl font-bold text-red-700 mt-0.5">
+                    {planResult.critical_plans}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-amber-50 border border-amber-100 p-2.5 text-center">
+                  <p className="text-[10px] uppercase font-semibold text-amber-700">
+                    Cao
+                  </p>
+                  <p className="text-xl font-bold text-amber-700 mt-0.5">
+                    {planResult.high_plans}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-emerald-50 border border-emerald-100 p-2.5 text-center">
+                  <p className="text-[10px] uppercase font-semibold text-emerald-700">
+                    Thường
+                  </p>
+                  <p className="text-xl font-bold text-emerald-700 mt-0.5">
+                    {planResult.normal_plans}
+                  </p>
+                </div>
+              </div>
+              <p className="text-xs text-neutral-500 leading-relaxed">
+                Bấm <strong>Xuất báo cáo PDF/Excel</strong> để tải kế hoạch chi
+                tiết, hoặc vào trang Đề xuất nhập kho để duyệt từng dòng.
+              </p>
+            </div>
+            <div className="px-5 py-3 border-t border-neutral-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPlanResult(null)}
+                className="px-4 py-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-lg hover:bg-neutral-50"
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlanResult(null);
+                  handleExport('pdf');
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+              >
+                <Download className="w-4 h-4" />
+                Xuất PDF ngay
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -344,51 +382,31 @@ export default function Alerts() {
   );
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-function StatCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: 'red' | 'yellow' | 'orange' | 'green';
-}) {
-  const palette: Record<string, { bg: string; border: string; text: string }> = {
-    red: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' },
-    yellow: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700' },
-    orange: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700' },
-    green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700' },
+/** Spec 7.5: phân loại theo tỉ lệ tồn kho / nhu cầu dự báo. */
+function classifyStock(stock: number, demand: number): StockClass {
+  if (demand <= 0) {
+    // Không có nhu cầu dự báo → coi như dư tồn nếu có hàng, an toàn nếu = 0
+    return stock > 0 ? 'overstock' : 'safe';
+  }
+  const ratio = stock / demand;
+  if (ratio < 0.1) return 'critical';
+  if (ratio < 0.25) return 'warning';
+  if (ratio <= 1.5) return 'safe';
+  return 'overstock';
+}
+
+function buildCode(category: string | undefined | null, id: number): string {
+  const prefix: Record<string, string> = {
+    medicine: 'MED',
+    mask: 'TB',
+    glove: 'TB',
+    test_kit: 'TB',
+    disinfectant: 'HC',
+    iv_fluid: 'VT',
+    other: 'VT',
   };
-  const p = palette[tone];
-  return (
-    <div className={`${p.bg} ${p.border} border rounded-xl p-4 text-center`}>
-      <p className={`text-2xl font-bold ${p.text}`}>{value}</p>
-      <p className="text-xs text-neutral-500 mt-0.5">{label}</p>
-    </div>
-  );
-}
-
-function FilterTab({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1.5 rounded-lg font-medium transition ${
-        active
-          ? 'bg-neutral-900 text-white'
-          : 'bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-50'
-      }`}
-    >
-      {label}
-    </button>
-  );
+  const p = prefix[category ?? ''] ?? 'VT';
+  return `${p}-${String(id).padStart(4, '0')}`;
 }

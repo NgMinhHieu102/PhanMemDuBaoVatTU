@@ -61,10 +61,10 @@ export const reportsService = {
 
   /**
    * POST /reports/export
-   * Generates and downloads a PDF report.
+   * Generates and downloads a PDF or Excel report.
    * Returns a Blob so the caller can trigger a file download.
    */
-  async exportReport(payload: ExportReportRequest): Promise<Blob> {
+  async exportReport(payload: ExportReportRequest & { format?: 'pdf' | 'excel' }): Promise<Blob> {
     const response = await api.post('/reports/export', payload, {
       responseType: 'blob',
     });

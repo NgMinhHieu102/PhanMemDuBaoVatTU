@@ -8,6 +8,7 @@ import Inventory from './pages/Inventory';
 import Forecasting from './pages/Forecasting';
 import Alerts from './pages/Alerts';
 import Epidemiology from './pages/Epidemiology';
+import Weather from './pages/Weather';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 
@@ -65,6 +66,7 @@ export default function App() {
           <Route path={ROUTES.FORECASTING} element={<Forecasting />} />
           <Route path={ROUTES.ALERTS} element={<Alerts />} />
           <Route path={ROUTES.EPIDEMIOLOGY} element={<Epidemiology />} />
+          <Route path={ROUTES.WEATHER} element={<Weather />} />
           <Route path={ROUTES.REPORTS} element={<Reports />} />
           <Route path={ROUTES.SETTINGS} element={<Settings />} />
         </Route>

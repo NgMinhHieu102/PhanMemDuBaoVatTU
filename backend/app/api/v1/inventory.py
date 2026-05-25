@@ -1,7 +1,7 @@
 """Inventory API endpoints."""
 import logging
 from typing import List, Optional, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from fastapi import APIRouter, Depends, File, HTTPException, status, Request, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -78,6 +78,49 @@ def get_expiring_items(
     inventory_service = InventoryService(db)
     items = inventory_service.get_expiring_items(days_threshold=days)
     return items
+
+
+# ── Smart Medical spec 6 — Static path routes phải khai báo trước "/{inventory_id}" ──
+
+
+@router.get("/template", include_in_schema=True)
+async def download_inventory_template():
+    """File CSV mẫu cho Import tồn kho đầu kỳ (spec 6.5)."""
+    from fastapi.responses import StreamingResponse
+
+    sample = (
+        "supply_code,supply_name,category,unit,current_stock,safety_stock,"
+        "expiry_date,supplier,lead_time_days\n"
+        "VT-1001,Paracetamol 500mg,medicine,Hộp,1250,200,2026-12-31,Pharma Co,7\n"
+        "TB-4022,Găng tay y tế Nitrile Size M,glove,Hộp,55,100,,Medsupply,14\n"
+        "HC-9015,Cồn y tế 70 độ 500ml,disinfectant,Chai,12,150,2027-06-30,ChemLab,5\n"
+    )
+    return StreamingResponse(
+        iter([sample]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=inventory_template.csv"
+        },
+    )
+
+
+@router.post("/import")
+async def _import_inventory_csv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_inventory_manager_or_admin),
+) -> Any:
+    """Import tồn kho đầu kỳ từ file CSV (spec 6.5)."""
+    return await _do_inventory_import(file, db, current_user)
+
+
+@router.get("/export")
+async def _export_inventory_excel(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Xuất báo cáo tồn kho ra file Excel (.xlsx) — spec 6.6."""
+    return _do_inventory_export(db)
 
 
 @router.get("/{inventory_id}", response_model=InventoryResponse)
@@ -231,3 +274,272 @@ def batch_update_inventory(
     except Exception as e:
         logger.error(f"Failed to batch update inventory: {str(e)}")
         raise
+
+
+
+# ── Smart Medical spec 6.5: Helpers ─────────────────────────────────────────
+
+
+async def _do_inventory_import(file: "UploadFile", db: Session, current_user: User) -> Any:
+    """Logic import tồn kho đầu kỳ (spec 6.5)."""
+    import csv as _csv
+    import io as _io
+    from datetime import datetime as _dt
+
+    from app.models.medical_supply import MedicalSupply
+    from app.models.inventory import Inventory as InventoryModel
+
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    raw = await file.read()
+    text = raw.decode("utf-8", errors="replace")
+    reader = list(_csv.DictReader(_io.StringIO(text)))
+
+    if not reader:
+        return {"imported": 0, "updated": 0, "skipped": 0, "errors": []}
+
+    imported = 0
+    updated = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    for idx, row in enumerate(reader, start=2):
+        name = (row.get("supply_name") or "").strip()
+        category = (row.get("category") or "other").strip()
+        unit = (row.get("unit") or "Cái").strip()
+
+        if not name:
+            skipped += 1
+            errors.append({"row": idx, "reason": "Thiếu supply_name"})
+            continue
+
+        # Parse số
+        try:
+            cur_stock = int(float((row.get("current_stock") or "0").strip() or 0))
+            saf_stock = int(float((row.get("safety_stock") or "0").strip() or 0))
+        except ValueError:
+            skipped += 1
+            errors.append(
+                {"row": idx, "reason": "current_stock / safety_stock không phải số"}
+            )
+            continue
+
+        if cur_stock < 0 or saf_stock < 0:
+            skipped += 1
+            errors.append({"row": idx, "reason": "Tồn kho / ngưỡng AT không được âm"})
+            continue
+
+        try:
+            lead_time = int(
+                float((row.get("lead_time_days") or "").strip() or 0)
+            )
+        except ValueError:
+            lead_time = None
+
+        expiry_str = (row.get("expiry_date") or "").strip()
+        expiry_date = None
+        if expiry_str:
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+                try:
+                    expiry_date = _dt.strptime(expiry_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+
+        # 1. Tìm/Tạo MedicalSupply (theo name)
+        supply = (
+            db.query(MedicalSupply)
+            .filter(MedicalSupply.name == name)
+            .first()
+        )
+        is_new_supply = supply is None
+        if is_new_supply:
+            supply = MedicalSupply(
+                name=name,
+                category=category,
+                unit=unit,
+                lead_time_days=lead_time,
+            )
+            db.add(supply)
+            db.flush()  # để có supply.id
+        else:
+            # Cho phép cập nhật unit / category nếu admin đã chỉnh ở file
+            if category and category != "other":
+                supply.category = category
+            if unit:
+                supply.unit = unit
+            if lead_time is not None:
+                supply.lead_time_days = lead_time
+
+        # 2. Tìm/Tạo Inventory record
+        inv = (
+            db.query(InventoryModel)
+            .filter(InventoryModel.supply_id == supply.id)
+            .first()
+        )
+        if inv is None:
+            db.add(
+                InventoryModel(
+                    supply_id=supply.id,
+                    current_stock=cur_stock,
+                    safety_stock=saf_stock,
+                    expiry_date=expiry_date,
+                )
+            )
+            imported += 1
+        else:
+            inv.current_stock = cur_stock
+            inv.safety_stock = saf_stock
+            if expiry_date:
+                inv.expiry_date = expiry_date
+            updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save: {exc}")
+
+    logger.info(
+        "Inventory import by user=%s: imported=%d updated=%d skipped=%d",
+        current_user.username, imported, updated, skipped,
+    )
+    return {
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors[:200],
+        "errors_truncated": len(errors) > 200,
+    }
+
+
+def _do_inventory_export(db: Session) -> Any:
+    """Logic xuất Excel báo cáo tồn kho."""
+    import io as _io
+    from datetime import datetime as _dt
+    from fastapi.responses import Response
+
+    from app.models.medical_supply import MedicalSupply
+    from app.models.inventory import Inventory as InventoryModel
+
+    rows = (
+        db.query(
+            InventoryModel.id,
+            InventoryModel.current_stock,
+            InventoryModel.safety_stock,
+            InventoryModel.expiry_date,
+            MedicalSupply.id.label("supply_id"),
+            MedicalSupply.name,
+            MedicalSupply.category,
+            MedicalSupply.unit,
+            MedicalSupply.lead_time_days,
+        )
+        .join(MedicalSupply, MedicalSupply.id == InventoryModel.supply_id)
+        .order_by(MedicalSupply.name)
+        .all()
+    )
+
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="openpyxl not installed — không thể xuất Excel",
+        )
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Tồn kho"
+
+    headers = [
+        "Mã VT",
+        "Tên vật tư",
+        "Loại",
+        "ĐVT",
+        "Tồn kho",
+        "Ngưỡng AT",
+        "Trạng thái",
+        "Hạn dùng",
+        "Lead time (ngày)",
+    ]
+
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    align_center = Alignment(horizontal="center", vertical="center")
+
+    for col_num, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col_num, value=h)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = align_center
+
+    category_label = {
+        "medicine": "Thuốc",
+        "mask": "Khẩu trang",
+        "glove": "Găng tay",
+        "test_kit": "Kit XN",
+        "disinfectant": "Hoá chất",
+        "iv_fluid": "Dịch truyền",
+        "other": "Khác",
+    }
+    prefix_map = {
+        "medicine": "VT",
+        "mask": "TB",
+        "glove": "TB",
+        "test_kit": "TB",
+        "disinfectant": "HC",
+        "iv_fluid": "VT",
+        "other": "VT",
+    }
+    status_color = {
+        "Bình thường": "16A34A",
+        "Dưới ngưỡng": "D97706",
+        "Cần nhập gấp": "DC2626",
+    }
+
+    for r_idx, r in enumerate(rows, start=2):
+        cur = r.current_stock or 0
+        saf = r.safety_stock or 0
+        if cur <= 0:
+            status_text = "Cần nhập gấp"
+        elif saf > 0 and cur < saf * 0.3:
+            status_text = "Cần nhập gấp"
+        elif cur <= saf:
+            status_text = "Dưới ngưỡng"
+        else:
+            status_text = "Bình thường"
+
+        prefix = prefix_map.get(r.category or "", "VT")
+        code = f"{prefix}-{str(r.supply_id).zfill(4)}"
+
+        ws.cell(row=r_idx, column=1, value=code)
+        ws.cell(row=r_idx, column=2, value=r.name)
+        ws.cell(row=r_idx, column=3, value=category_label.get(r.category or "", r.category))
+        ws.cell(row=r_idx, column=4, value=r.unit)
+        ws.cell(row=r_idx, column=5, value=cur)
+        ws.cell(row=r_idx, column=6, value=saf)
+        status_cell = ws.cell(row=r_idx, column=7, value=status_text)
+        status_cell.font = Font(color=status_color.get(status_text, "000000"), bold=True)
+        ws.cell(
+            row=r_idx,
+            column=8,
+            value=r.expiry_date.strftime("%d/%m/%Y") if r.expiry_date else "",
+        )
+        ws.cell(row=r_idx, column=9, value=r.lead_time_days or "")
+
+    widths = [12, 38, 14, 8, 10, 10, 16, 12, 14]
+    for col_num, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col_num)].width = w
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"inventory_{_dt.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

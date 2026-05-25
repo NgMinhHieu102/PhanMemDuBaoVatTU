@@ -36,7 +36,7 @@ export default function Header() {
         >
           <Menu size={20} />
         </button>
-        <h1 className="text-lg font-semibold text-neutral-900">{pageTitle}</h1>
+        <h1 className="text-lg font-semibold text-neutral-900">Smart Medical System</h1>
       </div>
 
       {/* Right: Notifications + User */}

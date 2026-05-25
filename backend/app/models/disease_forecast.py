@@ -12,6 +12,7 @@ class DiseaseForecast(Base):
     id = Column(Integer, primary_key=True, index=True)
     forecast_date = Column(Date, nullable=False, index=True)
     disease_type = Column(String(100), nullable=False, index=True)
+    location = Column(String(100), index=True)  # Khu vực dự báo
     predicted_cases = Column(Integer, nullable=False)
     confidence_lower = Column(Integer)
     confidence_upper = Column(Integer)
@@ -20,4 +21,14 @@ class DiseaseForecast(Base):
     model_accuracy_rmse = Column(Numeric(10, 2))
     model_accuracy_mape = Column(Numeric(5, 2))
     forecast_period_days = Column(Integer)
+    # Risk classification
+    risk_level = Column(String(20))  # 'low' | 'medium' | 'high' | 'very_high'
+    baseline_cases = Column(Integer)  # Ca nền (TB cùng kỳ các năm)
+    weather_factor = Column(Numeric(5, 3))
+    trend_factor = Column(Numeric(5, 3))
+    explanation = Column(String(1000))  # Giải thích mô hình
+    # Để theo dõi sai số khi có số liệu thực tế
+    actual_cases = Column(Integer)
+    deviation_pct = Column(Numeric(7, 2))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(String(100))

@@ -162,16 +162,32 @@ class InventoryResponse(ORMBase, InventoryBase):
 
 class EnvironmentalDataBase(BaseModel):
     recorded_at: datetime
-    location: str
-    temperature: Optional[float] = None
-    humidity: Optional[float] = None
-    rainfall: Optional[float] = None
-    air_quality_index: Optional[int] = None
+    location: str = Field(..., min_length=1)
+    district_ward: Optional[str] = None
+    # Spec 4.4 — validate range
+    temperature: Optional[float] = Field(None, ge=10, le=45, description="°C, 10-45")
+    humidity: Optional[float] = Field(None, ge=0, le=100, description="%, 0-100")
+    rainfall: Optional[float] = Field(None, ge=0, description="mm, ≥ 0")
+    air_quality_index: Optional[int] = Field(None, ge=0, description="≥ 0")
+    pm25: Optional[float] = Field(None, ge=0, description="µg/m³, ≥ 0")
     data_source: Optional[str] = None
 
 
 class EnvironmentalDataCreate(EnvironmentalDataBase):
     pass
+
+
+class EnvironmentalDataUpdate(BaseModel):
+    """Cập nhật một phần — tất cả field optional, vẫn validate range."""
+    recorded_at: Optional[datetime] = None
+    location: Optional[str] = Field(None, min_length=1)
+    district_ward: Optional[str] = None
+    temperature: Optional[float] = Field(None, ge=10, le=45)
+    humidity: Optional[float] = Field(None, ge=0, le=100)
+    rainfall: Optional[float] = Field(None, ge=0)
+    air_quality_index: Optional[int] = Field(None, ge=0)
+    pm25: Optional[float] = Field(None, ge=0)
+    data_source: Optional[str] = None
 
 
 class EnvironmentalDataResponse(ORMBase, EnvironmentalDataBase):
@@ -183,19 +199,30 @@ class EnvironmentalDataResponse(ORMBase, EnvironmentalDataBase):
 
 class DiseaseCaseBase(BaseModel):
     recorded_at: datetime
-    disease_type: DiseaseType
+    disease_type: str = Field(..., min_length=1, description="Disease key, e.g. dengue_fever")
     case_count: int = Field(..., ge=0)
-    location: str
+    location: str = Field(..., min_length=1)
     severity: Optional[str] = None
     data_source: Optional[str] = None
+    note: Optional[str] = None
 
 
 class DiseaseCaseCreate(DiseaseCaseBase):
     pass
 
 
+class DiseaseCaseUpdate(BaseModel):
+    recorded_at: Optional[datetime] = None
+    disease_type: Optional[str] = None
+    case_count: Optional[int] = Field(None, ge=0)
+    location: Optional[str] = None
+    severity: Optional[str] = None
+    note: Optional[str] = None
+
+
 class DiseaseCaseResponse(ORMBase, DiseaseCaseBase):
     id: int
+    created_by: Optional[str] = None
     created_at: datetime
 
 

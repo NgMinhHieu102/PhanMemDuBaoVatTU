@@ -13,7 +13,7 @@ import InventoryTable, {
 } from '../components/inventory/InventoryTable';
 import { classifyStatus } from '../components/inventory/InventoryStatusBadge';
 
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 10;
 
 /** Module 6 — Quản lý Vật tư Y tế & Kho vận */
 export default function Inventory() {
@@ -49,13 +49,21 @@ export default function Inventory() {
   const allRows: InventoryRow[] = useMemo(() => {
     return inventory.map((item: any, idx: number) => {
       const supply = item.supply ?? {};
-      const code = buildSupplyCode(supply.category, item.supply_id ?? item.id ?? idx);
+      // Ưu tiên supply_code mới (VT001-VT015), fallback build từ category+id
+      const code =
+        supply.supply_code ??
+        buildSupplyCode(supply.category, item.supply_id ?? item.id ?? idx);
       const categoryLabel =
-        SUPPLY_CATEGORY_LABELS[supply.category] ?? supply.category ?? '—';
+        supply.group_name ??
+        SUPPLY_CATEGORY_LABELS[supply.category] ??
+        supply.category ??
+        '—';
+      // Tên vật tư: ưu tiên ten_hoat_chat (mới), fallback name (cũ)
+      const supplyName = supply.ten_hoat_chat ?? supply.name ?? '—';
       return {
         id: item.id,
         code,
-        name: supply.name ?? '—',
+        name: supplyName,
         category: categoryLabel,
         unit: supply.unit ?? '—',
         currentStock: item.current_stock ?? 0,
@@ -68,7 +76,9 @@ export default function Inventory() {
   const categoryOptions = useMemo(() => {
     const unique = new Set<string>();
     inventory.forEach((it: any) => {
-      if (it.supply?.category) unique.add(it.supply.category);
+      // Ưu tiên group_name (15 thuốc/vật tư mới), fallback category
+      const cat = it.supply?.group_name ?? it.supply?.category;
+      if (cat) unique.add(cat);
     });
     return Array.from(unique).map((key) => ({
       key,

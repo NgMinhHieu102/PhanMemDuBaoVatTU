@@ -25,15 +25,15 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Mapping NhomBenh from CSV to system disease types
+# Mapping ICD code (mã bệnh) từ tên bệnh tiếng Việt
 NHOM_BENH_MAPPING = {
-    "Bệnh lý hô hấp": "respiratory_disease",
-    "Cúm mùa": "seasonal_flu",
-    "Nhiễm virus": "viral_infection",
-    "Sốt xuất huyết": "dengue_fever",
+    "Viêm phế quản cấp": "J20",
+    "Nhiễm trùng đường hô hấp trên cấp": "J06",
+    "Viêm họng cấp": "J02",
+    "Viêm xoang cấp": "J01",
 }
 
-# Reverse mapping
+# Reverse mapping: ICD code → tên bệnh
 DISEASE_TYPE_TO_NHOM_BENH = {v: k for k, v in NHOM_BENH_MAPPING.items()}
 
 

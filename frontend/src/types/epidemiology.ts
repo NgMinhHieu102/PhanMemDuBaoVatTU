@@ -1,16 +1,19 @@
-export type DiseaseType =
-  | 'dengue_fever'
-  | 'seasonal_flu'
-  | 'respiratory_disease'
-  | 'viral_infection';
+// 4 bệnh hô hấp đơn giản dùng để dự báo
+export type DiseaseType = 'J20' | 'J06' | 'J02' | 'J01';
 
 export interface DiseaseCase {
   id: number;
   recorded_at: string;
-  disease_type: DiseaseType;
+  icd_code: DiseaseType | string;
+  disease_name: string;
+  // disease_type giữ lại để tương thích code cũ — nay luôn là 'respiratory'
+  disease_type?: string;
   case_count: number;
   location: string;
+  district_ward?: string | null;
   severity?: string;
+  length_of_stay?: number | null;
+  sub_icd_count?: number | null;
   data_source?: string;
   note?: string | null;
   created_by?: string | null;
@@ -19,16 +22,22 @@ export interface DiseaseCase {
 
 export interface DiseaseCaseCreate {
   recorded_at: string;
-  disease_type: DiseaseType;
+  icd_code: DiseaseType | string;
+  disease_name: string;
+  disease_type?: string;
   case_count: number;
   location: string;
+  district_ward?: string | null;
   severity?: string;
+  length_of_stay?: number;
+  sub_icd_count?: number;
   data_source?: string;
   note?: string;
 }
 
 export interface DiseaseStatistic {
-  disease_type: DiseaseType;
+  icd_code: DiseaseType | string;
+  disease_name: string;
   total_cases: number;
   record_count: number;
   latest_record_date: string;
@@ -38,7 +47,8 @@ export interface DiseaseStatistic {
 export interface DiseaseTrendPoint {
   date: string;
   case_count: number;
-  disease_type: DiseaseType;
+  icd_code: DiseaseType | string;
+  disease_name: string;
 }
 
 export interface DiseaseStatsResponse {
@@ -53,23 +63,28 @@ export interface DiseaseStatsResponse {
 export interface DiseaseTrendsResponse {
   trends: DiseaseTrendPoint[];
   filters: {
-    disease_type?: DiseaseType;
+    icd_code?: DiseaseType;
     location?: string;
     start_date?: string;
     end_date?: string;
   };
 }
 
-export const DISEASE_TYPE_LABELS: Record<DiseaseType, string> = {
-  dengue_fever: 'Sốt xuất huyết',
-  seasonal_flu: 'Cúm mùa',
-  respiratory_disease: 'Bệnh hô hấp',
-  viral_infection: 'Nhiễm virus',
+// Map mã ICD → tên bệnh tiếng Việt
+export const DISEASE_TYPE_LABELS: Record<string, string> = {
+  J20: 'Viêm phế quản cấp',
+  J06: 'Nhiễm trùng đường hô hấp trên cấp',
+  J02: 'Viêm họng cấp',
+  J01: 'Viêm xoang cấp',
+  // Giữ lại các nhãn cũ để tương thích nếu DB còn dữ liệu cũ
+  respiratory: 'Bệnh hô hấp',
 };
 
-export const DISEASE_TYPE_COLORS: Record<DiseaseType, string> = {
-  dengue_fever: '#ef4444', // red
-  seasonal_flu: '#3b82f6', // blue
-  respiratory_disease: '#f59e0b', // amber
-  viral_infection: '#8b5cf6', // violet
+// Màu sắc cho từng bệnh
+export const DISEASE_TYPE_COLORS: Record<string, string> = {
+  J20: '#ef4444', // red — viêm phế quản cấp
+  J06: '#3b82f6', // blue — nhiễm trùng hô hấp trên
+  J02: '#f59e0b', // amber — viêm họng cấp
+  J01: '#8b5cf6', // violet — viêm xoang cấp
+  respiratory: '#6b7280',
 };

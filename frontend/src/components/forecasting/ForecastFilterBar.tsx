@@ -1,11 +1,15 @@
 import { ChevronDown, Loader2 } from 'lucide-react';
 import { cn } from '../../utils/cn';
+import {
+  VN_PROVINCES,
+  getDistrictsForRegion,
+} from '../../utils/vietnamRegions';
 
 export interface ForecastFilters {
   disease: string;
-  province: string;
-  ward: string;
-  month: string; // YYYY-MM
+  province: string; // 'all' = toàn thành phố, hoặc tên tỉnh/thành
+  ward: string;     // 'all' = tất cả quận/huyện, hoặc tên quận/huyện
+  month: string;    // YYYY-MM
 }
 
 interface DiseaseOption {
@@ -18,7 +22,8 @@ interface Props {
   onChange: (filters: ForecastFilters) => void;
   onAnalyze: () => void;
   diseases: DiseaseOption[];
-  regions: string[];
+  /** Map cascade từ DB (tỉnh → list quận có data thật) — gộp với master data VN. */
+  regionDistricts?: Record<string, string[]>;
   isLoading?: boolean;
   disabled?: boolean;
 }
@@ -28,12 +33,17 @@ export default function ForecastFilterBar({
   onChange,
   onAnalyze,
   diseases,
-  regions,
+  regionDistricts = {},
   isLoading = false,
   disabled = false,
 }: Props) {
   const update = (patch: Partial<ForecastFilters>) =>
     onChange({ ...filters, ...patch });
+
+  const districtList =
+    filters.province !== 'all'
+      ? getDistrictsForRegion(filters.province, regionDistricts)
+      : [];
 
   return (
     <div className="bg-white rounded-2xl border border-neutral-200 p-5">
@@ -60,23 +70,29 @@ export default function ForecastFilterBar({
             value={filters.province}
             onChange={(v) => update({ province: v, ward: 'all' })}
           >
-            <option value="all">Toàn thành phố</option>
-            <option value="hcm">TP. Hồ Chí Minh</option>
-            <option value="hanoi">Hà Nội</option>
-            <option value="danang">Đà Nẵng</option>
+            <option value="all">Toàn thành phố / cả nước</option>
+            {VN_PROVINCES.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
           </SelectInput>
         </FilterField>
 
-        <FilterField label="Phường/Xã">
+        <FilterField label="Quận/Huyện">
           <SelectInput
             value={filters.ward}
             onChange={(v) => update({ ward: v })}
             disabled={filters.province === 'all'}
           >
-            <option value="all">Tất cả phường/xã</option>
-            {regions.map((r) => (
-              <option key={r} value={r}>
-                {r}
+            <option value="all">
+              {filters.province === 'all'
+                ? 'Chọn Tỉnh/Thành trước'
+                : 'Tất cả quận/huyện'}
+            </option>
+            {districtList.map((d) => (
+              <option key={d} value={d}>
+                {d}
               </option>
             ))}
           </SelectInput>

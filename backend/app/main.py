@@ -92,7 +92,7 @@ async def health_check():
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────
-from app.api.v1 import auth, users, supplies, inventory, environmental, disease_cases, supply_requirements, alerts, procurement, dashboard, reports, config, audit_logs, forecast_analysis, admin_catalog
+from app.api.v1 import auth, users, supplies, inventory, environmental, disease_cases, supply_requirements, alerts, procurement, dashboard, reports, config, audit_logs, forecast_analysis, admin_catalog, supply_recommendations, admin_severity
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
@@ -109,3 +109,5 @@ app.include_router(config.router, prefix="/api/v1/config", tags=["configuration"
 app.include_router(audit_logs.router, prefix="/api/v1", tags=["audit-logs"])
 app.include_router(forecast_analysis.router, prefix="/api/v1/forecast", tags=["forecast-analysis"])
 app.include_router(admin_catalog.router, prefix="/api/v1/admin", tags=["admin-catalog"])
+app.include_router(supply_recommendations.router, prefix="/api/v1/supply-recommendations", tags=["supply-recommendations"])
+app.include_router(admin_severity.router, prefix="/api/v1/admin", tags=["admin-severity"])

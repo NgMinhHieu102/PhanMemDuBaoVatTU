@@ -110,3 +110,6 @@ backend/app/ai_engine/models/saved_models/*.pkl
 # Playwright test results
 frontend/test-results/
 frontend/playwright-report/
+
+# External cloned repos (not part of this project)
+open-meteo/

@@ -1,10 +1,11 @@
-import { ChevronDown, Filter, Search, Boxes } from 'lucide-react';
+import { ChevronDown, Filter, Search, Boxes, Activity } from 'lucide-react';
 import { cn } from '../../utils/cn';
 
 export interface AlertsFilters {
   search: string;
   status: string;     // 'all' | 'critical' | 'warning' | 'safe' | 'overstock'
   category: string;   // 'all' | category key
+  disease: string;    // 'all' | disease_type key
 }
 
 interface Option {
@@ -16,6 +17,7 @@ interface Props {
   filters: AlertsFilters;
   onChange: (next: AlertsFilters) => void;
   categories: Option[];
+  diseases: Option[];
 }
 
 const STATUS_OPTIONS: Option[] = [
@@ -26,7 +28,7 @@ const STATUS_OPTIONS: Option[] = [
   { key: 'overstock', label: 'Dư tồn' },
 ];
 
-export default function AlertsToolbar({ filters, onChange, categories }: Props) {
+export default function AlertsToolbar({ filters, onChange, categories, diseases }: Props) {
   const update = (patch: Partial<AlertsFilters>) =>
     onChange({ ...filters, ...patch });
 
@@ -44,6 +46,12 @@ export default function AlertsToolbar({ filters, onChange, categories }: Props) 
           value={filters.category}
           onChange={(v) => update({ category: v })}
           options={[{ key: 'all', label: 'Tất cả nhóm vật tư' }, ...categories]}
+        />
+        <SelectChip
+          icon={<Activity className="w-3.5 h-3.5" />}
+          value={filters.disease}
+          onChange={(v) => update({ disease: v })}
+          options={[{ key: 'all', label: 'Tất cả loại bệnh' }, ...diseases]}
         />
       </div>
 

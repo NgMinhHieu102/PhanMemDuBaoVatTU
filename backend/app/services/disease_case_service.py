@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 class DiseaseCaseService:
     """Service for managing disease case data."""
     
-    # Valid disease types
+    # 4 bệnh hô hấp được chọn để dự báo
     VALID_DISEASE_TYPES = [
-        DiseaseType.DENGUE_FEVER.value,
-        DiseaseType.SEASONAL_FLU.value,
-        DiseaseType.RESPIRATORY_DISEASE.value
+        DiseaseType.J20.value,  # Viêm phế quản cấp
+        DiseaseType.J06.value,  # Nhiễm trùng đường hô hấp trên cấp
+        DiseaseType.J02.value,  # Viêm họng cấp
+        DiseaseType.J01.value,  # Viêm xoang cấp
     ]
     
     def __init__(self, db: Session):
@@ -38,10 +39,10 @@ class DiseaseCaseService:
         if data.case_count < 0:
             errors.append("Case count must be non-negative")
         
-        # Validate disease type
-        if data.disease_type.value not in self.VALID_DISEASE_TYPES:
+        # Validate ICD code (mã bệnh)
+        if data.icd_code not in self.VALID_DISEASE_TYPES:
             errors.append(
-                f"Invalid disease type. Must be one of: {', '.join(self.VALID_DISEASE_TYPES)}"
+                f"Invalid ICD code. Must be one of: {', '.join(self.VALID_DISEASE_TYPES)}"
             )
         
         # Validate location is not empty
@@ -58,7 +59,7 @@ class DiseaseCaseService:
         self,
         skip: int = 0,
         limit: int = 100,
-        disease_type: Optional[str] = None,
+        icd_code: Optional[str] = None,
         location: Optional[str] = None
     ) -> List[DiseaseCase]:
         """Get list of disease case records with optional filtering."""
@@ -66,9 +67,9 @@ class DiseaseCaseService:
             desc(DiseaseCase.recorded_at)
         )
         
-        # Filter by disease type
-        if disease_type:
-            query = query.filter(DiseaseCase.disease_type == disease_type)
+        # Filter by ICD code
+        if icd_code:
+            query = query.filter(DiseaseCase.icd_code == icd_code)
         
         # Filter by location
         if location:
@@ -90,11 +91,17 @@ class DiseaseCaseService:
         # Create record
         disease_case = DiseaseCase(
             recorded_at=data.recorded_at,
-            disease_type=data.disease_type.value,
+            icd_code=data.icd_code,
+            disease_name=data.disease_name,
+            disease_type=data.disease_type or "respiratory",
             case_count=data.case_count,
             location=data.location,
+            district_ward=data.district_ward,
             severity=data.severity,
-            data_source=data.data_source or "manual"
+            length_of_stay=data.length_of_stay,
+            sub_icd_count=data.sub_icd_count,
+            data_source=data.data_source or "manual",
+            note=data.note,
         )
         
         self.db.add(disease_case)
@@ -107,7 +114,8 @@ class DiseaseCaseService:
             table_name="disease_cases",
             record_id=disease_case.id,
             new_value={
-                "disease_type": data.disease_type.value,
+                "icd_code": data.icd_code,
+                "disease_name": data.disease_name,
                 "case_count": data.case_count,
                 "location": data.location,
                 "recorded_at": data.recorded_at.isoformat()
@@ -120,8 +128,8 @@ class DiseaseCaseService:
         self.db.refresh(disease_case)
         
         logger.info(
-            f"Created disease case ID: {disease_case.id} for {disease_case.disease_type} "
-            f"at {disease_case.location}"
+            f"Created disease case ID: {disease_case.id} for {disease_case.icd_code} - "
+            f"{disease_case.disease_name} at {disease_case.location}"
         )
         return disease_case
     
@@ -132,16 +140,17 @@ class DiseaseCaseService:
         end_date: Optional[datetime] = None
     ) -> List[Dict[str, Any]]:
         """
-        Get statistics by disease type.
+        Get statistics by ICD code.
         
-        Returns total case counts grouped by disease type.
+        Returns total case counts grouped by ICD code.
         """
         query = self.db.query(
-            DiseaseCase.disease_type,
+            DiseaseCase.icd_code,
+            DiseaseCase.disease_name,
             func.sum(DiseaseCase.case_count).label("total_cases"),
             func.count(DiseaseCase.id).label("record_count"),
             func.max(DiseaseCase.recorded_at).label("latest_record")
-        ).group_by(DiseaseCase.disease_type)
+        ).group_by(DiseaseCase.icd_code, DiseaseCase.disease_name)
         
         # Apply filters
         if location:
@@ -159,7 +168,8 @@ class DiseaseCaseService:
         statistics = []
         for row in results:
             statistics.append({
-                "disease_type": row.disease_type,
+                "icd_code": row.icd_code,
+                "disease_name": row.disease_name,
                 "total_cases": int(row.total_cases) if row.total_cases else 0,
                 "record_count": row.record_count,
                 "latest_record": row.latest_record.isoformat() if row.latest_record else None
@@ -169,7 +179,7 @@ class DiseaseCaseService:
     
     def get_trends(
         self,
-        disease_type: Optional[str] = None,
+        icd_code: Optional[str] = None,
         location: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -178,22 +188,24 @@ class DiseaseCaseService:
         """
         Get trend data (time series) for disease cases.
         
-        Returns case counts over time, optionally filtered by disease type and location.
+        Returns case counts over time, optionally filtered by ICD code and location.
         """
         query = self.db.query(
             func.date(DiseaseCase.recorded_at).label("date"),
-            DiseaseCase.disease_type,
+            DiseaseCase.icd_code,
+            DiseaseCase.disease_name,
             DiseaseCase.location,
             func.sum(DiseaseCase.case_count).label("total_cases")
         ).group_by(
             func.date(DiseaseCase.recorded_at),
-            DiseaseCase.disease_type,
+            DiseaseCase.icd_code,
+            DiseaseCase.disease_name,
             DiseaseCase.location
         ).order_by(desc(func.date(DiseaseCase.recorded_at)))
         
         # Apply filters
-        if disease_type:
-            query = query.filter(DiseaseCase.disease_type == disease_type)
+        if icd_code:
+            query = query.filter(DiseaseCase.icd_code == icd_code)
         
         if location:
             query = query.filter(DiseaseCase.location == location)
@@ -213,7 +225,8 @@ class DiseaseCaseService:
             date_str = row.date if isinstance(row.date, str) else (row.date.isoformat() if row.date else None)
             trends.append({
                 "date": date_str,
-                "disease_type": row.disease_type,
+                "icd_code": row.icd_code,
+                "disease_name": row.disease_name,
                 "location": row.location,
                 "total_cases": int(row.total_cases) if row.total_cases else 0
             })

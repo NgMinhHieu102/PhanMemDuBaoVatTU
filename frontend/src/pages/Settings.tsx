@@ -8,6 +8,8 @@ import {
   Activity,
   Settings as SettingsIcon,
   Shield,
+  Percent,
+  Pill,
 } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
 import { useAuthStore } from '../store/authStore';
@@ -18,19 +20,25 @@ import RolesPermissionsSection from '../components/admin/RolesPermissionsSection
 import ConfigurationsSection from '../components/admin/ConfigurationsSection';
 import ThresholdsAndRatiosSection from '../components/admin/ThresholdsAndRatiosSection';
 import AuditLogsSection from '../components/admin/AuditLogsSection';
+import SeverityRateSection from '../components/admin/SeverityRateSection';
+import SupplyNormSection from '../components/admin/SupplyNormSection';
 
 type TabKey =
   | 'users'
   | 'roles'
   | 'configurations'
   | 'thresholds'
+  | 'severity-rates'
+  | 'supply-norms'
   | 'audit-logs';
 
 const TABS: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: 'users', label: 'Quản lý tài khoản', icon: Users },
   { key: 'roles', label: 'Phân quyền', icon: ShieldCheck },
   { key: 'configurations', label: 'Cấu hình bệnh & khu vực', icon: Boxes },
-  { key: 'thresholds', label: 'Định mức & ngưỡng', icon: AlertTriangle },
+  { key: 'severity-rates', label: 'Tỷ lệ Nhẹ/TB/Nặng', icon: Percent },
+  { key: 'supply-norms', label: 'Định mức thuốc/vật tư', icon: Pill },
+  { key: 'thresholds', label: 'Ngưỡng cảnh báo', icon: AlertTriangle },
   { key: 'audit-logs', label: 'Nhật ký hệ thống', icon: Activity },
 ];
 
@@ -101,6 +109,8 @@ export default function Settings() {
         {activeTab === 'users' && <UsersSection />}
         {activeTab === 'roles' && <RolesPermissionsSection />}
         {activeTab === 'configurations' && <ConfigurationsSection />}
+        {activeTab === 'severity-rates' && <SeverityRateSection />}
+        {activeTab === 'supply-norms' && <SupplyNormSection />}
         {activeTab === 'thresholds' && <ThresholdsAndRatiosSection />}
         {activeTab === 'audit-logs' && <AuditLogsSection />}
       </div>

@@ -42,24 +42,24 @@ class AnalyzeRequest(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _norm_disease(d: str) -> str:
-    """Map Vietnamese disease name → key if needed."""
+    """Map Vietnamese disease name → ICD code if needed (4 bệnh hô hấp)."""
     map_vi = {
-        "Sốt xuất huyết": "dengue_fever",
-        "Cúm mùa": "seasonal_flu",
-        "Cúm A": "seasonal_flu",
-        "Bệnh hô hấp": "respiratory_disease",
-        "Bệnh lý hô hấp": "respiratory_disease",
-        "Nhiễm virus": "viral_infection",
+        "Viêm phế quản cấp": "J20",
+        "Nhiễm trùng đường hô hấp trên cấp": "J06",
+        "Nhiễm trùng hô hấp trên cấp": "J06",
+        "Viêm họng cấp": "J02",
+        "Viêm xoang cấp": "J01",
     }
-    return map_vi.get(d.strip(), d.strip())
+    s = d.strip()
+    return map_vi.get(s, s)
 
 
 def _disease_label(d: str) -> str:
     labels = {
-        "dengue_fever": "Sốt xuất huyết",
-        "seasonal_flu": "Cúm mùa",
-        "respiratory_disease": "Bệnh hô hấp",
-        "viral_infection": "Nhiễm virus",
+        "J20": "Viêm phế quản cấp",
+        "J06": "Nhiễm trùng đường hô hấp trên cấp",
+        "J02": "Viêm họng cấp",
+        "J01": "Viêm xoang cấp",
     }
     return labels.get(d, d)
 
@@ -94,14 +94,21 @@ def _query_cases(
     year: int,
     month: int,
 ) -> int:
-    """Tổng ca bệnh trong tháng cho disease + region."""
+    """Tổng ca bệnh trong tháng cho disease + region.
+
+    region có thể là tỉnh/thành (DiseaseCase.location) hoặc quận/huyện
+    (DiseaseCase.district_ward) — match theo OR để hỗ trợ cả 2 cấp.
+    """
     q = db.query(func.coalesce(func.sum(DiseaseCase.case_count), 0)).filter(
-        DiseaseCase.disease_type == disease,
+        DiseaseCase.icd_code == disease,
         extract("year", DiseaseCase.recorded_at) == year,
         extract("month", DiseaseCase.recorded_at) == month,
     )
     if region:
-        q = q.filter(DiseaseCase.location == region)
+        q = q.filter(
+            (DiseaseCase.location == region)
+            | (DiseaseCase.district_ward == region)
+        )
     return int(q.scalar() or 0)
 
 
@@ -271,10 +278,13 @@ async def list_diseases(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> List[Dict[str, str]]:
-    """Danh sách bệnh có dữ liệu trong DB (kèm label tiếng Việt)."""
-    rows = db.query(DiseaseCase.disease_type).distinct().all()
-    seen = {r[0] for r in rows if r[0]}
-    return [{"key": k, "label": _disease_label(k)} for k in sorted(seen)]
+    """Danh sách bệnh có dữ liệu trong DB (4 bệnh hô hấp - dùng icd_code)."""
+    rows = db.query(DiseaseCase.icd_code, DiseaseCase.disease_name).distinct().all()
+    seen: dict[str, str] = {}
+    for icd, name in rows:
+        if icd:
+            seen[icd] = name or _disease_label(icd)
+    return [{"key": k, "label": v} for k, v in sorted(seen.items())]
 
 
 @router.get("/regions")
@@ -412,9 +422,13 @@ async def analyze_forecast(
 
     # 7. Lưu lịch sử dự báo
     forecast_date = date(payload.target_year, payload.target_month, 1)
+    disease_name_label = _disease_label(disease)
     saved = DiseaseForecast(
+        forecast_month=forecast_date,
         forecast_date=forecast_date,
-        disease_type=disease,
+        icd_code=disease,
+        disease_name=disease_name_label,
+        disease_type="respiratory",
         location=region,
         predicted_cases=predicted,
         confidence_lower=int(predicted * 0.85),
@@ -488,7 +502,7 @@ async def get_forecast_history(
     """Lịch sử dự báo gần đây kèm độ lệch (nếu đã có actual)."""
     q = db.query(DiseaseForecast).order_by(DiseaseForecast.created_at.desc())
     if disease_type:
-        q = q.filter(DiseaseForecast.disease_type == _norm_disease(disease_type))
+        q = q.filter(DiseaseForecast.icd_code == _norm_disease(disease_type))
     if region:
         q = q.filter(DiseaseForecast.location == region)
     rows = q.limit(limit).all()
@@ -503,8 +517,9 @@ async def get_forecast_history(
             {
                 "id": r.id,
                 "month": r.forecast_date.strftime("%m/%Y"),
-                "disease_type": r.disease_type,
-                "disease_label": _disease_label(r.disease_type),
+                "disease_type": r.icd_code,
+                "icd_code": r.icd_code,
+                "disease_label": r.disease_name or _disease_label(r.icd_code),
                 "region": r.location or "Toàn thành phố",
                 "predicted_cases": r.predicted_cases,
                 "actual_cases": actual,
@@ -587,7 +602,7 @@ async def export_forecast_pdf(
     base_style = _base_table_style(colors)
 
     risk_label_map = {"low": "Thấp", "medium": "Trung bình", "high": "Cao", "very_high": "Rất cao"}
-    disease_label = _disease_label(fc.disease_type)
+    disease_label = fc.disease_name or _disease_label(fc.icd_code)
     region_text = fc.location or "Toàn thành phố"
     month_label = fc.forecast_date.strftime("%m/%Y") if fc.forecast_date else "—"
 

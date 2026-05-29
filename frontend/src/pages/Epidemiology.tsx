@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Filter,
   Download,
@@ -20,15 +21,21 @@ import api from '../services/api';
 import { epidemiologyService } from '../services/epidemiologyService';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { DISEASE_TYPE_LABELS, type DiseaseType } from '../types/epidemiology';
+import { VN_PROVINCES, VN_PROVINCES_SET, getDistrictsForRegion } from '../utils/vietnamRegions';
 
 const PAGE_SIZE = 10;
 
 interface CaseRow {
   id: number;
   recorded_at: string;
-  disease_type: DiseaseType | string;
+  // Mới: dùng icd_code và disease_name
+  icd_code: DiseaseType | string;
+  disease_name: string;
+  // disease_type giữ lại để tương thích, có thể null/respiratory
+  disease_type?: DiseaseType | string;
   case_count: number;
   location: string;
+  district_ward?: string | null;
   data_source?: string;
   note?: string | null;
   created_by?: string | null;
@@ -42,6 +49,7 @@ interface ImportError {
 
 export default function Epidemiology() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { setPageTitle } = useUIStore();
 
@@ -52,12 +60,15 @@ export default function Epidemiology() {
   // Filter state
   const [selectedDisease, setSelectedDisease] = useState<string>('all');
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
+  const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
 
   // Distinct values for dropdowns
   const [diseaseOptions, setDiseaseOptions] = useState<string[]>([]);
   const [regionOptions, setRegionOptions] = useState<string[]>([]);
+  // Map: tỉnh/thành → list quận/huyện đã có data trong DB
+  const [regionDistricts, setRegionDistricts] = useState<Record<string, string[]>>({});
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -70,6 +81,7 @@ export default function Epidemiology() {
   );
   const [formDisease, setFormDisease] = useState<string>('dengue_fever');
   const [formRegion, setFormRegion] = useState<string>('Thành phố Hồ Chí Minh');
+  const [formDistrict, setFormDistrict] = useState<string>('');
   const [formCases, setFormCases] = useState<number>(0);
   const [formNote, setFormNote] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -109,34 +121,86 @@ export default function Epidemiology() {
       const [adminRes, distinctRes] = await Promise.all([
         api.get('/admin/regions').catch(() => ({ data: [] as any[] })),
         api.get('/disease-cases/distinct-values').catch(() => ({
-          data: { disease_types: [], regions: [] },
+          data: { disease_types: [], regions: [], region_districts: {} },
         })),
       ]);
 
       // Diseases — cho dropdown filter, vẫn dùng danh sách thực tế từ DB
       setDiseaseOptions(distinctRes.data?.disease_types ?? []);
 
-      // Regions — merge danh mục admin + lịch sử DB
-      const adminNames: string[] = (adminRes.data || []).map((r: any) => r.name);
-      const historyNames: string[] = distinctRes.data?.regions ?? [];
-      const merged = Array.from(new Set([...adminNames, ...historyNames])).filter(Boolean);
-      // Sắp "Toàn thành phố" lên đầu nếu có
-      merged.sort((a, b) => {
-        if (a === 'Toàn thành phố') return -1;
-        if (b === 'Toàn thành phố') return 1;
-        return a.localeCompare(b, 'vi');
-      });
-      setRegionOptions(merged);
+      // Regions = Tỉnh/Thành. Lấy từ admin.regions có trường province (nếu có)
+      // gộp với lịch sử DB.
+      const adminRegions: any[] = adminRes.data || [];
+      // Province từ admin: ưu tiên field "province" của các region đã đăng ký,
+      // nếu không có thì coi name (Toàn thành phố / TP.HCM) là tỉnh/thành luôn.
+      const adminProvinces = new Set<string>();
+      const adminDistrictsByProvince: Record<string, string[]> = {};
+      for (const r of adminRegions) {
+        const name = r?.name;
+        const prov = r?.province;
+        if (prov && typeof prov === 'string') {
+          adminProvinces.add(prov);
+          if (name && name !== prov) {
+            adminDistrictsByProvince[prov] = adminDistrictsByProvince[prov] || [];
+            adminDistrictsByProvince[prov].push(name);
+          }
+        } else if (name) {
+          // Không có province → coi là Tỉnh/Thành
+          adminProvinces.add(name);
+        }
+      }
+
+      const dbRegions: string[] = distinctRes.data?.regions ?? [];
+      const dbCascade: Record<string, string[]> =
+        distinctRes.data?.region_districts ?? {};
+
+      // Province dropdown: ưu tiên master 63 tỉnh.
+      // Chỉ thêm các giá trị từ admin/DB nếu chúng thực sự là tỉnh (có trong VN_PROVINCES_SET)
+      // hoặc là giá trị legacy đặc biệt (Toàn thành phố). Tránh rác như "Quận 3".
+      const LEGACY_ALLOW = new Set(['Toàn thành phố']);
+      const extraFromAdminDb = [...adminProvinces, ...dbRegions].filter(
+        (n) => VN_PROVINCES_SET.has(n) || LEGACY_ALLOW.has(n),
+      );
+      const merged = Array.from(
+        new Set<string>([...VN_PROVINCES, ...extraFromAdminDb]),
+      );
+      // Master đã sắp xếp đúng — chỉ cần đẩy "Toàn thành phố" lên trên cùng nếu có
+      const final = merged.filter((p) => p !== 'Toàn thành phố');
+      if (merged.includes('Toàn thành phố')) final.unshift('Toàn thành phố');
+      setRegionOptions(final);
+
+      // Cascade: chỉ lưu phần từ admin + DB; phần master data sẽ được merge
+      // ngay lúc render qua getDistrictsForRegion()
+      const cascade: Record<string, string[]> = {};
+      const addPair = (prov: string, dist: string) => {
+        if (!prov || !dist) return;
+        cascade[prov] = cascade[prov] || [];
+        if (!cascade[prov].includes(dist)) cascade[prov].push(dist);
+      };
+      Object.entries(adminDistrictsByProvince).forEach(([prov, dists]) =>
+        dists.forEach((d) => addPair(prov, d)),
+      );
+      Object.entries(dbCascade).forEach(([prov, dists]) =>
+        (dists as string[]).forEach((d) => addPair(prov, d)),
+      );
+      setRegionDistricts(cascade);
     } catch {
       /* ignore */
     }
   };
 
+  // Reset district filter khi đổi tỉnh/thành
+  useEffect(() => {
+    setSelectedDistrict('all');
+  }, [selectedRegion]);
+
   // Apply filters
   const filtered = useMemo(() => {
     return items.filter((it) => {
-      if (selectedDisease !== 'all' && it.disease_type !== selectedDisease) return false;
+      if (selectedDisease !== 'all' && it.icd_code !== selectedDisease) return false;
       if (selectedRegion !== 'all' && it.location !== selectedRegion) return false;
+      if (selectedDistrict !== 'all' && (it.district_ward ?? '') !== selectedDistrict)
+        return false;
       if (startDate) {
         if (new Date(it.recorded_at) < new Date(startDate)) return false;
       }
@@ -145,7 +209,7 @@ export default function Epidemiology() {
       }
       return true;
     });
-  }, [items, selectedDisease, selectedRegion, startDate, endDate]);
+  }, [items, selectedDisease, selectedRegion, selectedDistrict, startDate, endDate]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -192,8 +256,9 @@ export default function Epidemiology() {
   const openAddForm = () => {
     setEditing(null);
     setFormMonth(new Date().toISOString().slice(0, 7));
-    setFormDisease('dengue_fever');
+    setFormDisease('J20');
     setFormRegion('Thành phố Hồ Chí Minh');
+    setFormDistrict('');
     setFormCases(0);
     setFormNote('');
     setFormError(null);
@@ -203,8 +268,9 @@ export default function Epidemiology() {
   const openEditForm = (row: CaseRow) => {
     setEditing(row);
     setFormMonth(row.recorded_at.slice(0, 7));
-    setFormDisease(row.disease_type);
+    setFormDisease(row.icd_code);
     setFormRegion(row.location);
+    setFormDistrict(row.district_ward ?? '');
     setFormCases(row.case_count);
     setFormNote(row.note ?? '');
     setFormError(null);
@@ -230,22 +296,35 @@ export default function Epidemiology() {
       return;
     }
     const isoDate = new Date(`${formMonth}-01`).toISOString();
+    const diseaseNameMap: Record<string, string> = {
+      J20: 'Viêm phế quản cấp',
+      J06: 'Nhiễm trùng đường hô hấp trên cấp',
+      J02: 'Viêm họng cấp',
+      J01: 'Viêm xoang cấp',
+    };
+    const diseaseName = diseaseNameMap[formDisease] || formDisease;
     try {
       if (editing) {
         // Spec 3.2 #3: dùng endpoint PUT để giữ id + created_at
         await api.put(`/disease-cases/${editing.id}`, {
           recorded_at: isoDate,
-          disease_type: formDisease,
+          icd_code: formDisease,
+          disease_name: diseaseName,
+          disease_type: 'respiratory',
           case_count: formCases,
           location: formRegion.trim(),
+          district_ward: formDistrict.trim() || null,
           note: formNote.trim() || null,
         });
       } else {
         await epidemiologyService.createDiseaseCase({
           recorded_at: isoDate,
-          disease_type: formDisease as DiseaseType,
+          icd_code: formDisease as DiseaseType,
+          disease_name: diseaseName,
+          disease_type: 'respiratory',
           case_count: formCases,
           location: formRegion.trim(),
+          district_ward: formDistrict.trim() || undefined,
           note: formNote.trim() || undefined,
         } as any);
       }
@@ -275,8 +354,19 @@ export default function Epidemiology() {
 
   // ── Helpers ─────────────────────────────────────────────────────────────
 
-  const diseaseLabel = (d: string) =>
-    DISEASE_TYPE_LABELS[d as DiseaseType] || d;
+  const diseaseLabel = (input: CaseRow | string | { icd_code?: string; disease_name?: string; disease_type?: string }) => {
+    // Hỗ trợ truyền vào string (mã ICD hoặc disease_type cũ)
+    if (typeof input === 'string') {
+      return DISEASE_TYPE_LABELS[input] || input;
+    }
+    if (!input || typeof input !== 'object') return '—';
+    // Ưu tiên: disease_name > nhãn ICD > disease_type
+    if ('disease_name' in input && input.disease_name) return input.disease_name as string;
+    if (input.icd_code && DISEASE_TYPE_LABELS[input.icd_code]) return DISEASE_TYPE_LABELS[input.icd_code];
+    if (input.icd_code) return input.icd_code;
+    if (input.disease_type && DISEASE_TYPE_LABELS[input.disease_type]) return DISEASE_TYPE_LABELS[input.disease_type];
+    return input.disease_type || '—';
+  };
 
   const formatMonth = (iso: string) => {
     const dt = new Date(iso);
@@ -345,7 +435,7 @@ export default function Epidemiology() {
           <h3 className="font-semibold text-blue-700">Bộ lọc nâng cao</h3>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Date range */}
           <div>
             <label className="block text-sm font-medium text-neutral-600 mb-1.5">
@@ -392,10 +482,10 @@ export default function Epidemiology() {
             </div>
           </div>
 
-          {/* Region */}
+          {/* Region (Tỉnh/Thành) */}
           <div>
             <label className="block text-sm font-medium text-neutral-600 mb-1.5">
-              Khu vực
+              Tỉnh/Thành
             </label>
             <div className="relative">
               <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
@@ -404,12 +494,41 @@ export default function Epidemiology() {
                 onChange={(e) => setSelectedRegion(e.target.value)}
                 className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white"
               >
-                <option value="all">Tất cả khu vực</option>
+                <option value="all">Tất cả tỉnh/thành</option>
                 {regionOptions.map((r) => (
                   <option key={r} value={r}>
                     {r}
                   </option>
                 ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Quận/Huyện cascade theo Tỉnh/Thành */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-600 mb-1.5">
+              Quận/Huyện
+            </label>
+            <div className="relative">
+              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+              <select
+                value={selectedDistrict}
+                onChange={(e) => setSelectedDistrict(e.target.value)}
+                disabled={selectedRegion === 'all'}
+                className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white disabled:bg-neutral-50 disabled:text-neutral-400 disabled:cursor-not-allowed"
+              >
+                <option value="all">
+                  {selectedRegion === 'all'
+                    ? 'Chọn Tỉnh/Thành trước'
+                    : 'Tất cả quận/huyện'}
+                </option>
+                {selectedRegion !== 'all' &&
+                  getDistrictsForRegion(selectedRegion, regionDistricts).map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
               </select>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
             </div>
@@ -430,7 +549,8 @@ export default function Epidemiology() {
                 <tr className="text-neutral-500 text-xs">
                   <th className="text-left px-6 py-3 font-medium">Tháng/Năm</th>
                   <th className="text-left px-6 py-3 font-medium">Tên bệnh</th>
-                  <th className="text-left px-6 py-3 font-medium">Khu vực</th>
+                  <th className="text-left px-6 py-3 font-medium">Tỉnh/Thành</th>
+                  <th className="text-left px-6 py-3 font-medium">Quận/Huyện</th>
                   <th className="text-right px-6 py-3 font-medium">Số ca mắc</th>
                   <th className="text-right px-6 py-3 font-medium w-24">Thao tác</th>
                 </tr>
@@ -438,7 +558,7 @@ export default function Epidemiology() {
               <tbody>
                 {paged.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-neutral-400">
+                    <td colSpan={6} className="px-6 py-12 text-center text-neutral-400">
                       Không có dữ liệu
                     </td>
                   </tr>
@@ -452,15 +572,27 @@ export default function Epidemiology() {
                         {formatMonth(row.recorded_at)}
                       </td>
                       <td className="px-6 py-3 text-neutral-700">
-                        {diseaseLabel(row.disease_type)}
+                        {diseaseLabel(row)}
                       </td>
                       <td className="px-6 py-3 text-neutral-700">{row.location}</td>
+                      <td className="px-6 py-3 text-neutral-600">
+                        {row.district_ward || (
+                          <span className="text-neutral-300">—</span>
+                        )}
+                      </td>
                       <td
                         className={`px-6 py-3 text-right font-bold ${caseColor(
                           row.case_count,
                         )}`}
                       >
-                        {row.case_count.toLocaleString('vi-VN')}
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/epidemiology/${row.id}`)}
+                          className="hover:underline focus:outline-none"
+                          title="Xem chi tiết sử dụng thuốc"
+                        >
+                          {row.case_count.toLocaleString('vi-VN')}
+                        </button>
                       </td>
                       <td className="px-6 py-3 text-right">
                         <div className="inline-flex items-center gap-1">
@@ -576,7 +708,7 @@ export default function Epidemiology() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-neutral-600 mb-1">
-                  Khu vực <span className="text-red-500">*</span>
+                  Tỉnh/Thành <span className="text-red-500">*</span>
                 </label>
                 <select
                   value={
@@ -590,6 +722,7 @@ export default function Epidemiology() {
                     } else {
                       setFormRegion(e.target.value);
                     }
+                    setFormDistrict(''); // reset district khi đổi tỉnh
                   }}
                   className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white"
                 >
@@ -603,7 +736,7 @@ export default function Epidemiology() {
                       {r}
                     </option>
                   ))}
-                  <option value="__custom__">+ Nhập khu vực mới...</option>
+                  <option value="__custom__">+ Nhập Tỉnh/Thành mới...</option>
                 </select>
                 {!regionOptions.includes(formRegion) && (
                   <input
@@ -611,9 +744,65 @@ export default function Epidemiology() {
                     value={formRegion}
                     onChange={(e) => setFormRegion(e.target.value)}
                     className="w-full mt-2 px-3 py-2 border border-neutral-200 rounded-lg text-sm"
-                    placeholder="Quận 1, Thành phố Thủ Đức, ..."
+                    placeholder="VD: TP. Hồ Chí Minh"
                   />
                 )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-neutral-600 mb-1">
+                  Quận/Huyện
+                </label>
+                {(() => {
+                  const districtList = getDistrictsForRegion(formRegion, regionDistricts);
+                  const isInList = formDistrict && districtList.includes(formDistrict);
+                  const currentValue = formDistrict
+                    ? isInList
+                      ? formDistrict
+                      : '__custom__'
+                    : '';
+                  return (
+                    <>
+                      <select
+                        value={currentValue}
+                        onChange={(e) => {
+                          if (e.target.value === '__custom__') {
+                            setFormDistrict('');
+                          } else {
+                            setFormDistrict(e.target.value);
+                          }
+                        }}
+                        className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm bg-white"
+                      >
+                        <option value="">— Không xác định (cấp Tỉnh/Thành) —</option>
+                        {districtList.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                        <option value="__custom__">+ Nhập Quận/Huyện mới...</option>
+                      </select>
+                      {!isInList && formDistrict !== '' && currentValue === '__custom__' && (
+                        <input
+                          type="text"
+                          value={formDistrict}
+                          onChange={(e) => setFormDistrict(e.target.value)}
+                          className="w-full mt-2 px-3 py-2 border border-neutral-200 rounded-lg text-sm"
+                          placeholder="VD: Quận 1, Thành phố Thủ Đức"
+                        />
+                      )}
+                      {currentValue === '__custom__' && formDistrict === '' && (
+                        <input
+                          type="text"
+                          value={formDistrict}
+                          onChange={(e) => setFormDistrict(e.target.value)}
+                          className="w-full mt-2 px-3 py-2 border border-neutral-200 rounded-lg text-sm"
+                          placeholder="VD: Quận 1, Thành phố Thủ Đức"
+                          autoFocus
+                        />
+                      )}
+                    </>
+                  );
+                })()}
               </div>
               <div>
                 <label className="block text-sm font-medium text-neutral-600 mb-1">

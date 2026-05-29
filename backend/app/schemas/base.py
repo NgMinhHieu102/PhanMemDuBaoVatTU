@@ -14,9 +14,18 @@ class UserRole(str, Enum):
 
 
 class DiseaseType(str, Enum):
-    DENGUE_FEVER = "dengue_fever"
-    SEASONAL_FLU = "seasonal_flu"
-    RESPIRATORY_DISEASE = "respiratory_disease"
+    """4 bệnh hô hấp đơn giản dùng để dự báo nhu cầu kho."""
+    J20 = "J20"  # Viêm phế quản cấp
+    J06 = "J06"  # Nhiễm trùng đường hô hấp trên cấp
+    J02 = "J02"  # Viêm họng cấp
+    J01 = "J01"  # Viêm xoang cấp
+
+
+class SeverityLevel(str, Enum):
+    """Mức độ nặng của bệnh."""
+    MILD = "mild"  # Nhẹ
+    MODERATE = "moderate"  # Trung bình
+    SEVERE = "severe"  # Nặng
 
 
 class AlertSeverity(str, Enum):
@@ -105,9 +114,12 @@ class UserLogin(BaseModel):
 # ── Medical Supply schemas ────────────────────────────────────────────────────
 
 class MedicalSupplyBase(BaseModel):
-    name: str
-    category: str
-    unit: str
+    supply_code: str = Field(..., description="Mã hệ thống nội bộ (VT001-VT015)")
+    drug_code: str = Field(..., description="Mã từ cột DrugCode trong dữ liệu lịch sử")
+    ten_hoat_chat: str = Field(..., description="Tên hoạt chất từ cột TenHoatChat")
+    unit: str = Field(..., description="Đơn vị tính (Viên, Gói, Lọ, Chai, Cái, Ống)")
+    group_name: str = Field(..., description="Nhóm thuốc/vật tư")
+    category: Optional[str] = None
     unit_price: Optional[float] = None
     minimum_order_quantity: Optional[int] = None
     lead_time_days: Optional[int] = None
@@ -120,9 +132,12 @@ class MedicalSupplyCreate(MedicalSupplyBase):
 
 
 class MedicalSupplyUpdate(BaseModel):
-    name: Optional[str] = None
-    category: Optional[str] = None
+    supply_code: Optional[str] = None
+    drug_code: Optional[str] = None
+    ten_hoat_chat: Optional[str] = None
     unit: Optional[str] = None
+    group_name: Optional[str] = None
+    category: Optional[str] = None
     unit_price: Optional[float] = None
     minimum_order_quantity: Optional[int] = None
     lead_time_days: Optional[int] = None
@@ -199,10 +214,15 @@ class EnvironmentalDataResponse(ORMBase, EnvironmentalDataBase):
 
 class DiseaseCaseBase(BaseModel):
     recorded_at: datetime
-    disease_type: str = Field(..., min_length=1, description="Disease key, e.g. dengue_fever")
+    icd_code: str = Field(..., min_length=1, description="Mã ICD: J20, J06, J02, J01")
+    disease_name: str = Field(..., min_length=1, description="Tên bệnh")
+    disease_type: Optional[str] = Field(None, description="Loại bệnh (respiratory)")
     case_count: int = Field(..., ge=0)
     location: str = Field(..., min_length=1)
-    severity: Optional[str] = None
+    district_ward: Optional[str] = None
+    severity: Optional[str] = Field(None, description="mild, moderate, severe")
+    length_of_stay: Optional[int] = Field(None, ge=0, description="Số ngày nằm viện")
+    sub_icd_count: Optional[int] = Field(None, ge=0, description="Số bệnh kèm theo")
     data_source: Optional[str] = None
     note: Optional[str] = None
 
@@ -213,10 +233,15 @@ class DiseaseCaseCreate(DiseaseCaseBase):
 
 class DiseaseCaseUpdate(BaseModel):
     recorded_at: Optional[datetime] = None
+    icd_code: Optional[str] = None
+    disease_name: Optional[str] = None
     disease_type: Optional[str] = None
     case_count: Optional[int] = Field(None, ge=0)
     location: Optional[str] = None
+    district_ward: Optional[str] = None
     severity: Optional[str] = None
+    length_of_stay: Optional[int] = Field(None, ge=0)
+    sub_icd_count: Optional[int] = Field(None, ge=0)
     note: Optional[str] = None
 
 
@@ -403,7 +428,7 @@ class ConversionRatioResponse(ORMBase):
 
 
 class ConversionRatioUpdate(BaseModel):
-    disease_type: str = Field(..., description="Disease type (e.g. dengue_fever)")
+    disease_type: str = Field(..., description="Mã ICD bệnh (J20, J06, J02, J01)")
     supply_id: int = Field(..., gt=0, description="ID of the medical supply")
     ratio: float = Field(..., gt=0, description="Conversion ratio (units per case)")
     unit: Optional[str] = None

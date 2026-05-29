@@ -17,11 +17,14 @@ export const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 // Dashboard
 export const DASHBOARD_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-// Disease types
+// Disease types — 4 bệnh hô hấp dùng để dự báo nhu cầu kho
 export const DISEASE_TYPE_LABELS: Record<string, string> = {
-  dengue_fever: 'Sốt xuất huyết',
-  seasonal_flu: 'Cúm mùa',
-  respiratory_disease: 'Bệnh hô hấp',
+  J20: 'Viêm phế quản cấp',
+  J06: 'Nhiễm trùng đường hô hấp trên cấp',
+  J02: 'Viêm họng cấp',
+  J01: 'Viêm xoang cấp',
+  // Giữ lại nhãn 'respiratory' để tương thích với dữ liệu hiện có
+  respiratory: 'Bệnh hô hấp',
 };
 
 // Supply categories

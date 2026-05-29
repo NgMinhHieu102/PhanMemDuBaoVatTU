@@ -85,15 +85,16 @@ def get_expiring_items(
 
 @router.get("/template", include_in_schema=True)
 async def download_inventory_template():
-    """File CSV mẫu cho Import tồn kho đầu kỳ (spec 6.5)."""
+    """File CSV mẫu cho Import tồn kho đầu kỳ (4 bệnh hô hấp + 15 thuốc/vật tư)."""
     from fastapi.responses import StreamingResponse
 
     sample = (
-        "supply_code,supply_name,category,unit,current_stock,safety_stock,"
-        "expiry_date,supplier,lead_time_days\n"
-        "VT-1001,Paracetamol 500mg,medicine,Hộp,1250,200,2026-12-31,Pharma Co,7\n"
-        "TB-4022,Găng tay y tế Nitrile Size M,glove,Hộp,55,100,,Medsupply,14\n"
-        "HC-9015,Cồn y tế 70 độ 500ml,disinfectant,Chai,12,150,2027-06-30,ChemLab,5\n"
+        "supply_code,drug_code,ten_hoat_chat,unit,group_name,category,current_stock,safety_stock,expiry_date,lead_time_days\n"
+        "VT001,A2A210200000133,Paracetamol,Viên,Thuốc hạ sốt giảm đau,medicine,8500,2000,2027-06-30,7\n"
+        "VT002,A2C816100000074,Natri clorid,Chai,Dung dịch/dịch truyền,medicine,420,500,2026-12-31,10\n"
+        "VT003,A2C715800000009,N-acetylcysteine,Gói,Thuốc long đờm,medicine,3200,1000,2027-09-30,7\n"
+        "VT004,A2A300000000058,Fexofenadin,Viên,Kháng histamin,medicine,2400,500,2027-03-31,7\n"
+        "VT005,A2A610720000036,Amoxicilin + acid clavulanic,Viên,Kháng sinh uống,medicine,2400,1500,2026-12-31,7\n"
     )
     return StreamingResponse(
         iter([sample]),
@@ -305,13 +306,17 @@ async def _do_inventory_import(file: "UploadFile", db: Session, current_user: Us
     errors: list[dict] = []
 
     for idx, row in enumerate(reader, start=2):
-        name = (row.get("supply_name") or "").strip()
+        # Hỗ trợ format mới (supply_code/drug_code/ten_hoat_chat) và format cũ (supply_name)
+        supply_code = (row.get("supply_code") or "").strip()
+        drug_code = (row.get("drug_code") or "").strip()
+        ten_hoat_chat = (row.get("ten_hoat_chat") or row.get("supply_name") or "").strip()
         category = (row.get("category") or "other").strip()
         unit = (row.get("unit") or "Cái").strip()
+        group_name = (row.get("group_name") or category or "Khác").strip()
 
-        if not name:
+        if not ten_hoat_chat and not supply_code and not drug_code:
             skipped += 1
-            errors.append({"row": idx, "reason": "Thiếu supply_name"})
+            errors.append({"row": idx, "reason": "Thiếu supply_code / drug_code / ten_hoat_chat"})
             continue
 
         # Parse số
@@ -347,28 +352,55 @@ async def _do_inventory_import(file: "UploadFile", db: Session, current_user: Us
                 except ValueError:
                     continue
 
-        # 1. Tìm/Tạo MedicalSupply (theo name)
-        supply = (
-            db.query(MedicalSupply)
-            .filter(MedicalSupply.name == name)
-            .first()
-        )
+        # 1. Tìm MedicalSupply theo supply_code, drug_code, hoặc ten_hoat_chat
+        supply = None
+        if supply_code:
+            supply = (
+                db.query(MedicalSupply)
+                .filter(MedicalSupply.supply_code == supply_code)
+                .first()
+            )
+        if supply is None and drug_code:
+            supply = (
+                db.query(MedicalSupply)
+                .filter(MedicalSupply.drug_code == drug_code)
+                .first()
+            )
+        if supply is None and ten_hoat_chat:
+            supply = (
+                db.query(MedicalSupply)
+                .filter(MedicalSupply.ten_hoat_chat == ten_hoat_chat)
+                .first()
+            )
+
         is_new_supply = supply is None
         if is_new_supply:
+            # Tạo mới với các trường bắt buộc
+            if not supply_code:
+                supply_code = f"VT_AUTO_{int(_dt.now().timestamp())}_{idx}"
+            if not drug_code:
+                drug_code = supply_code
+            if not ten_hoat_chat:
+                ten_hoat_chat = supply_code
             supply = MedicalSupply(
-                name=name,
-                category=category,
+                supply_code=supply_code,
+                drug_code=drug_code,
+                ten_hoat_chat=ten_hoat_chat,
                 unit=unit,
+                group_name=group_name,
+                category=category,
                 lead_time_days=lead_time,
             )
             db.add(supply)
-            db.flush()  # để có supply.id
+            db.flush()
         else:
-            # Cho phép cập nhật unit / category nếu admin đã chỉnh ở file
+            # Cập nhật metadata nếu có thay đổi
             if category and category != "other":
                 supply.category = category
             if unit:
                 supply.unit = unit
+            if group_name and group_name != "Khác":
+                supply.group_name = group_name
             if lead_time is not None:
                 supply.lead_time_days = lead_time
 
@@ -430,13 +462,16 @@ def _do_inventory_export(db: Session) -> Any:
             InventoryModel.safety_stock,
             InventoryModel.expiry_date,
             MedicalSupply.id.label("supply_id"),
-            MedicalSupply.name,
+            MedicalSupply.supply_code,
+            MedicalSupply.drug_code,
+            MedicalSupply.ten_hoat_chat,
+            MedicalSupply.group_name,
             MedicalSupply.category,
             MedicalSupply.unit,
             MedicalSupply.lead_time_days,
         )
         .join(MedicalSupply, MedicalSupply.id == InventoryModel.supply_id)
-        .order_by(MedicalSupply.name)
+        .order_by(MedicalSupply.supply_code)
         .all()
     )
 
@@ -512,12 +547,12 @@ def _do_inventory_export(db: Session) -> Any:
         else:
             status_text = "Bình thường"
 
-        prefix = prefix_map.get(r.category or "", "VT")
-        code = f"{prefix}-{str(r.supply_id).zfill(4)}"
+        # Sử dụng supply_code mới (VT001-VT015), không cần prefix
+        code = r.supply_code or f"VT-{str(r.supply_id).zfill(4)}"
 
         ws.cell(row=r_idx, column=1, value=code)
-        ws.cell(row=r_idx, column=2, value=r.name)
-        ws.cell(row=r_idx, column=3, value=category_label.get(r.category or "", r.category))
+        ws.cell(row=r_idx, column=2, value=r.ten_hoat_chat)
+        ws.cell(row=r_idx, column=3, value=r.group_name or category_label.get(r.category or "", r.category))
         ws.cell(row=r_idx, column=4, value=r.unit)
         ws.cell(row=r_idx, column=5, value=cur)
         ws.cell(row=r_idx, column=6, value=saf)

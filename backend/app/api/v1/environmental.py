@@ -141,7 +141,7 @@ async def env_distinct_values(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Province/city + district/ward duy nhất để dropdown filter."""
+    """Province/city + district/ward duy nhất + cascade map để dropdown filter."""
     from app.models.environmental_data import EnvironmentalData
 
     provinces = (
@@ -153,9 +153,22 @@ async def env_distinct_values(
         .order_by(EnvironmentalData.district_ward)
         .all()
     )
+    pairs = (
+        db.query(EnvironmentalData.location, EnvironmentalData.district_ward)
+        .filter(EnvironmentalData.district_ward.isnot(None))
+        .distinct()
+        .all()
+    )
+    province_districts: dict[str, list[str]] = {}
+    for prov, dist in pairs:
+        if prov and dist:
+            province_districts.setdefault(prov, []).append(dist)
+    for v in province_districts.values():
+        v.sort()
     return {
         "provinces": [p[0] for p in provinces if p[0]],
         "districts": [d[0] for d in districts if d[0]],
+        "province_districts": province_districts,
     }
 
 
@@ -439,3 +452,239 @@ def delete_environmental_record(
     db.delete(item)
     db.commit()
     return {"message": "deleted"}
+
+
+# ── Open-Meteo integration ────────────────────────────────────────────────
+# Endpoint sync dữ liệu thời tiết + chất lượng không khí từ Open-Meteo public API
+# (https://open-meteo.com — free, không cần API key).
+
+
+@router.post("/sync-openmeteo")
+def sync_openmeteo(
+    province: str = Query(
+        "TP. Hồ Chí Minh",
+        description="Tỉnh/thành để sync (mặc định TP. HCM)",
+    ),
+    months_back: int = Query(
+        12, ge=1, le=24,
+        description="Số tháng quá khứ cần sync (gộp historical archive)",
+    ),
+    forecast_days: int = Query(
+        16, ge=1, le=16,
+        description="Số ngày forecast tương lai cần sync (gộp daily)",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Đồng bộ dữ liệu thời tiết từ Open-Meteo về bảng environmental_data.
+
+    Logic:
+    - Quá khứ (months_back tháng): dùng historical archive API, gộp theo tháng,
+      ghi vào environmental_data với recorded_at = đầu tháng.
+    - Tương lai (forecast_days ngày): dùng forecast API, gộp theo tháng, ghi
+      tháng kế tiếp nếu có overlap.
+    - AQI/PM2.5 chỉ có cho ~7 ngày forecast (giới hạn của air-quality API miễn phí),
+      sẽ ghi đè vào tháng hiện tại nếu có dữ liệu.
+
+    Tự upsert theo (recorded_at, location).
+    """
+    from datetime import date as _date, timedelta as _timedelta
+    from calendar import monthrange as _monthrange
+    from app.services.openmeteo_client import OpenMeteoClient
+    from app.models.environmental_data import EnvironmentalData
+
+    coords = OpenMeteoClient.lookup_coords(province)
+    if not coords:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Không có toạ độ cho tỉnh/thành '{province}'. "
+                   f"Thêm vào PROVINCE_COORDS trong openmeteo_client.py.",
+        )
+    lat, lon = coords
+
+    client = OpenMeteoClient()
+
+    # Bước 1: Historical — group theo (year, month)
+    today = _date.today()
+    earliest = (today.replace(day=1) - _timedelta(days=1)).replace(day=1)  # tháng trước
+    for _ in range(months_back - 1):
+        earliest = (earliest - _timedelta(days=1)).replace(day=1)
+
+    historical_end = today - _timedelta(days=1)
+    if historical_end < earliest:
+        historical_end = earliest
+
+    try:
+        historical_rows = client.get_historical_daily(lat, lon, earliest, historical_end)
+    except Exception as exc:
+        logger.error("Open-Meteo archive fetch failed: %s", exc)
+        historical_rows = []
+
+    # Bước 2: Forecast (16-day daily)
+    try:
+        forecast_rows = client.get_daily_forecast(lat, lon, forecast_days=forecast_days)
+    except Exception as exc:
+        logger.error("Open-Meteo forecast fetch failed: %s", exc)
+        forecast_rows = []
+
+    # Bước 3: Air quality (forecast 5-7 ngày)
+    try:
+        aq_rows = client.get_air_quality_daily(lat, lon, forecast_days=5, past_days=7)
+    except Exception as exc:
+        logger.warning("Open-Meteo air-quality fetch failed: %s", exc)
+        aq_rows = []
+
+    # Build map ngày → AQI cho merge
+    aq_map = {r["date"]: r for r in aq_rows}
+
+    # Merge tất cả rows + augment AQI nếu có
+    all_rows = historical_rows + forecast_rows
+    monthly: dict[tuple[int, int], dict] = {}
+    for r in all_rows:
+        d_str = r.get("date")
+        if not d_str:
+            continue
+        try:
+            y, m, _ = d_str.split("-")
+            year, month = int(y), int(m)
+        except Exception:
+            continue
+        bucket = monthly.setdefault((year, month), {
+            "temps": [],
+            "hums": [],
+            "rains": [],
+            "aqis": [],
+            "pm25s": [],
+        })
+        if r.get("temperature") is not None:
+            bucket["temps"].append(r["temperature"])
+        if r.get("humidity") is not None:
+            bucket["hums"].append(r["humidity"])
+        if r.get("rainfall") is not None:
+            bucket["rains"].append(r["rainfall"])
+        # Augment AQI nếu có
+        aq = aq_map.get(d_str)
+        if aq:
+            if aq.get("aqi") is not None:
+                bucket["aqis"].append(aq["aqi"])
+            if aq.get("pm25") is not None:
+                bucket["pm25s"].append(aq["pm25"])
+
+    imported = 0
+    updated = 0
+    months_summary: list[dict] = []
+
+    for (year, month), b in sorted(monthly.items()):
+        recorded_at = datetime(year, month, 1)
+        temp = round(sum(b["temps"]) / len(b["temps"]), 2) if b["temps"] else None
+        humidity = round(sum(b["hums"]) / len(b["hums"]), 2) if b["hums"] else None
+        rainfall = round(sum(b["rains"]), 2) if b["rains"] else None
+        aqi = int(round(sum(b["aqis"]) / len(b["aqis"]))) if b["aqis"] else None
+        pm25 = round(sum(b["pm25s"]) / len(b["pm25s"]), 2) if b["pm25s"] else None
+
+        existing = (
+            db.query(EnvironmentalData)
+            .filter(
+                EnvironmentalData.recorded_at == recorded_at,
+                EnvironmentalData.location == province,
+                EnvironmentalData.district_ward.is_(None),
+            )
+            .first()
+        )
+
+        if existing:
+            existing.temperature = temp
+            existing.humidity = humidity
+            existing.rainfall = rainfall
+            if aqi is not None:
+                existing.air_quality_index = aqi
+            if pm25 is not None:
+                existing.pm25 = pm25
+            existing.data_source = "open-meteo"
+            updated += 1
+        else:
+            db.add(EnvironmentalData(
+                recorded_at=recorded_at,
+                location=province,
+                district_ward=None,
+                temperature=temp,
+                humidity=humidity,
+                rainfall=rainfall,
+                air_quality_index=aqi,
+                pm25=pm25,
+                data_source="open-meteo",
+            ))
+            imported += 1
+
+        months_summary.append({
+            "year": year,
+            "month": month,
+            "temperature": temp,
+            "humidity": humidity,
+            "rainfall": rainfall,
+            "aqi": aqi,
+            "pm25": pm25,
+            "days_aggregated": len(b["temps"]),
+        })
+
+    db.commit()
+
+    logger.info(
+        "Open-Meteo sync by user=%s province=%s: imported=%d updated=%d months=%d",
+        current_user.username, province, imported, updated, len(months_summary),
+    )
+
+    return {
+        "status": "ok",
+        "province": province,
+        "lat": lat,
+        "lon": lon,
+        "imported": imported,
+        "updated": updated,
+        "total_months": len(months_summary),
+        "historical_days": len(historical_rows),
+        "forecast_days": len(forecast_rows),
+        "air_quality_days": len(aq_rows),
+        "months": months_summary,
+    }
+
+
+@router.get("/openmeteo/forecast")
+def openmeteo_forecast_preview(
+    province: str = Query("TP. Hồ Chí Minh"),
+    days: int = Query(7, ge=1, le=16),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Preview forecast Open-Meteo cho N ngày tới — KHÔNG ghi DB."""
+    from app.services.openmeteo_client import OpenMeteoClient
+
+    coords = OpenMeteoClient.lookup_coords(province)
+    if not coords:
+        raise HTTPException(status_code=400, detail=f"Unknown province: {province}")
+    lat, lon = coords
+
+    client = OpenMeteoClient()
+    try:
+        forecast = client.get_daily_forecast(lat, lon, forecast_days=days)
+        air = client.get_air_quality_daily(lat, lon, forecast_days=min(days, 5))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Open-Meteo error: {exc}")
+
+    aq_map = {a["date"]: a for a in air}
+    enriched = []
+    for d in forecast:
+        merged = dict(d)
+        aq = aq_map.get(d["date"])
+        if aq:
+            merged["aqi"] = aq.get("aqi")
+            merged["pm25"] = aq.get("pm25")
+        enriched.append(merged)
+
+    return {
+        "province": province,
+        "lat": lat,
+        "lon": lon,
+        "forecast_days": len(forecast),
+        "items": enriched,
+    }

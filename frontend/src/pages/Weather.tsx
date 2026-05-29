@@ -13,6 +13,7 @@ import {
   X,
   Edit3,
   Trash2,
+  Cloud,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -27,6 +28,7 @@ import {
 import { useUIStore } from '../store/uiStore';
 import api from '../services/api';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import { VN_PROVINCES, VN_PROVINCES_SET, getDistrictsForRegion } from '../utils/vietnamRegions';
 
 const PAGE_SIZE = 5;
 
@@ -63,6 +65,7 @@ export default function Weather() {
   const [items, setItems] = useState<EnvRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [syncingOpenMeteo, setSyncingOpenMeteo] = useState(false);
 
   // Filters
   const [filterMonth, setFilterMonth] = useState<string>(() =>
@@ -72,6 +75,13 @@ export default function Weather() {
   const [filterDistrict, setFilterDistrict] = useState<string>('all');
   const [provinces, setProvinces] = useState<string[]>([]);
   const [districts, setDistricts] = useState<string[]>([]);
+  // Map cascade tỉnh → list quận đã có data trong DB
+  const [provinceDistricts, setProvinceDistricts] = useState<Record<string, string[]>>({});
+
+  // Reset district khi đổi tỉnh
+  useEffect(() => {
+    setFilterDistrict('all');
+  }, [filterProvince]);
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -129,11 +139,11 @@ export default function Weather() {
 
   const loadDistinctValues = async () => {
     try {
-      // Merge admin.regions + DB lịch sử để có cả khu vực mới chưa có data
+      // Merge admin.regions + DB lịch sử + master VN
       const [adminRes, distinctRes] = await Promise.all([
         api.get('/admin/regions').catch(() => ({ data: [] as any[] })),
         api.get('/environmental/distinct-values').catch(() => ({
-          data: { provinces: [], districts: [] },
+          data: { provinces: [], districts: [], province_districts: {} },
         })),
       ]);
 
@@ -148,13 +158,22 @@ export default function Weather() {
 
       const dbProvinces: string[] = distinctRes.data?.provinces ?? [];
       const dbDistricts: string[] = distinctRes.data?.districts ?? [];
+      const dbCascade: Record<string, string[]> =
+        distinctRes.data?.province_districts ?? {};
 
-      const mergedProvinces = Array.from(
-        new Set([...adminProvinces, ...dbProvinces]),
-      ).filter(Boolean);
-      mergedProvinces.sort((a, b) => a.localeCompare(b, 'vi'));
-      setProvinces(mergedProvinces);
+      // Province dropdown: chỉ giữ các giá trị thực sự là tỉnh
+      const LEGACY_ALLOW = new Set(['Toàn thành phố']);
+      const extraFromAdminDb = [...adminProvinces, ...dbProvinces].filter(
+        (n) => VN_PROVINCES_SET.has(n) || LEGACY_ALLOW.has(n),
+      );
+      const merged = Array.from(
+        new Set<string>([...VN_PROVINCES, ...extraFromAdminDb]),
+      );
+      const final = merged.filter((p) => p !== 'Toàn thành phố');
+      if (merged.includes('Toàn thành phố')) final.unshift('Toàn thành phố');
+      setProvinces(final);
 
+      // Cho dropdown khi chưa chọn tỉnh — gộp tất cả admin districts + DB
       const mergedDistricts = Array.from(
         new Set([...adminNames, ...dbDistricts]),
       ).filter(Boolean);
@@ -164,6 +183,8 @@ export default function Weather() {
         return a.localeCompare(b, 'vi');
       });
       setDistricts(mergedDistricts);
+
+      setProvinceDistricts(dbCascade);
     } catch {
       /* ignore */
     }
@@ -234,6 +255,37 @@ export default function Weather() {
       alert('Lỗi import: ' + (err.response?.data?.detail || err.message));
     } finally {
       setImporting(false);
+    }
+  };
+
+  const syncOpenMeteo = async () => {
+    const province =
+      filterProvince !== 'all' ? filterProvince : 'TP. Hồ Chí Minh';
+    if (
+      !window.confirm(
+        `Đồng bộ dữ liệu thời tiết từ Open-Meteo cho "${province}" (12 tháng quá khứ + 16 ngày dự báo)?`,
+      )
+    ) {
+      return;
+    }
+    setSyncingOpenMeteo(true);
+    try {
+      const res = await api.post('/environmental/sync-openmeteo', null, {
+        params: { province, months_back: 12, forecast_days: 16 },
+      });
+      const d = res.data ?? {};
+      alert(
+        `✓ Open-Meteo sync xong cho ${d.province}\n` +
+          `Mới: ${d.imported}, cập nhật: ${d.updated}, tổng ${d.total_months} tháng.\n` +
+          `(historical ${d.historical_days} ngày · forecast ${d.forecast_days} ngày · AQI ${d.air_quality_days} ngày)`,
+      );
+      loadData();
+      loadDistinctValues();
+      loadTrend();
+    } catch (err: any) {
+      alert('Lỗi sync Open-Meteo: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setSyncingOpenMeteo(false);
     }
   };
 
@@ -393,6 +445,15 @@ export default function Weather() {
             {importing ? 'Đang import…' : 'Import Excel/CSV'}
           </button>
           <button
+            onClick={syncOpenMeteo}
+            disabled={syncingOpenMeteo}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-sky-50 border border-sky-200 text-sky-700 rounded-xl text-sm font-medium hover:bg-sky-100 disabled:opacity-50"
+            title="Đồng bộ dữ liệu thời tiết và AQI từ Open-Meteo (free, no API key)"
+          >
+            <Cloud className="w-4 h-4" />
+            {syncingOpenMeteo ? 'Đang đồng bộ…' : 'Đồng bộ Open-Meteo'}
+          </button>
+          <button
             onClick={openAddForm}
             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700"
           >
@@ -438,20 +499,26 @@ export default function Weather() {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-neutral-600 mb-1.5">Phường/Xã</label>
+            <label className="block text-sm font-medium text-neutral-600 mb-1.5">Quận/Huyện</label>
             <div className="relative">
               <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
               <select
                 value={filterDistrict}
                 onChange={(e) => setFilterDistrict(e.target.value)}
-                className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white"
+                disabled={filterProvince === 'all'}
+                className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white disabled:bg-neutral-50 disabled:text-neutral-400 disabled:cursor-not-allowed"
               >
-                <option value="all">Tất cả Phường/Xã</option>
-                {districts.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
+                <option value="all">
+                  {filterProvince === 'all'
+                    ? 'Chọn Tỉnh/Thành trước'
+                    : 'Tất cả Quận/Huyện'}
+                </option>
+                {filterProvince !== 'all' &&
+                  getDistrictsForRegion(filterProvince, provinceDistricts).map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
               </select>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
             </div>
@@ -710,9 +777,9 @@ export default function Weather() {
                   }
                   onChange={(e) => {
                     if (e.target.value === '__custom__') {
-                      setForm({ ...form, province: '' });
+                      setForm({ ...form, province: '', district: '' });
                     } else {
-                      setForm({ ...form, province: e.target.value });
+                      setForm({ ...form, province: e.target.value, district: '' });
                     }
                   }}
                   className="input"
@@ -739,39 +806,48 @@ export default function Weather() {
                   />
                 )}
               </Field>
-              <Field label="Phường/Xã / Quận/Huyện">
-                <select
-                  value={
-                    districts.includes(form.district) || !form.district
+              <Field label="Quận/Huyện">
+                {(() => {
+                  const list = getDistrictsForRegion(form.province, provinceDistricts);
+                  const isInList = form.district && list.includes(form.district);
+                  const value = form.district
+                    ? isInList
                       ? form.district
                       : '__custom__'
-                  }
-                  onChange={(e) => {
-                    if (e.target.value === '__custom__') {
-                      setForm({ ...form, district: '' });
-                    } else {
-                      setForm({ ...form, district: e.target.value });
-                    }
-                  }}
-                  className="input"
-                >
-                  <option value="">— Không xác định —</option>
-                  {districts.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                  <option value="__custom__">+ Nhập mới...</option>
-                </select>
-                {form.district && !districts.includes(form.district) && (
-                  <input
-                    type="text"
-                    value={form.district}
-                    onChange={(e) => setForm({ ...form, district: e.target.value })}
-                    className="input mt-2"
-                    placeholder="VD: Quận 1, Thành phố Thủ Đức"
-                  />
-                )}
+                    : '';
+                  return (
+                    <>
+                      <select
+                        value={value}
+                        onChange={(e) => {
+                          if (e.target.value === '__custom__') {
+                            setForm({ ...form, district: '' });
+                          } else {
+                            setForm({ ...form, district: e.target.value });
+                          }
+                        }}
+                        className="input"
+                      >
+                        <option value="">— Không xác định —</option>
+                        {list.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                        <option value="__custom__">+ Nhập mới...</option>
+                      </select>
+                      {value === '__custom__' && (
+                        <input
+                          type="text"
+                          value={form.district}
+                          onChange={(e) => setForm({ ...form, district: e.target.value })}
+                          className="input mt-2"
+                          placeholder="VD: Quận 1, Thành phố Thủ Đức"
+                        />
+                      )}
+                    </>
+                  );
+                })()}
               </Field>
               <Field label="Nhiệt độ TB (°C)" hint="10–45°C">
                 <input

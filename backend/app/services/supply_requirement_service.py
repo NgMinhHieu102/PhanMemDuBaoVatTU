@@ -213,7 +213,7 @@ class SupplyRequirementService:
             window_end = forecast.created_at + timedelta(seconds=5)
             forecast_batch = self.db.query(DiseaseForecast).filter(
                 and_(
-                    DiseaseForecast.disease_type == forecast.disease_type,
+                    DiseaseForecast.icd_code == forecast.icd_code,
                     DiseaseForecast.created_at >= window_start,
                     DiseaseForecast.created_at <= window_end,
                 )
@@ -226,7 +226,7 @@ class SupplyRequirementService:
 
         logger.info(
             f"Found {len(forecast_batch)} forecast records in batch for "
-            f"disease_type={forecast.disease_type}"
+            f"icd_code={forecast.icd_code}"
         )
 
         # Delete any previously generated requirements for these forecasts
@@ -237,50 +237,81 @@ class SupplyRequirementService:
         ).delete(synchronize_session="fetch")
         self.db.flush()
 
-        # Initialize and load conversion module
-        conversion_module = ConversionModule(self.db)
-        try:
-            conversion_module.load_conversion_ratios()
-        except Exception as e:
-            logger.warning(
-                f"Could not load conversion ratios from DB: {e}. "
-                "Using default ratios."
-            )
-
-        # Compute requirements for each forecast record in the batch
+        # Compute requirements for each forecast record in the batch.
+        # Priority order:
+        #   1) Ratio thực từ case_supply_usage (lịch sử ca bệnh đã import từ CSV).
+        #      Chỉ dùng các thuốc đã được dùng cho ĐÚNG disease_type này — tránh
+        #      đề xuất thuốc của bệnh khác.
+        #   2) Fallback ConversionModule (conversion_ratios cấu hình thủ công).
         created_requirements: List[SupplyRequirement] = []
 
         for fc in forecast_batch:
+            actual_supplies = self._compute_actual_ratios(
+                disease_type=fc.icd_code,
+                location=fc.location,
+            )
+
+            if actual_supplies:
+                # Có lịch sử thật → dùng ratio thực (per_case = total_qty / total_cases)
+                logger.info(
+                    f"Using actual usage history for forecast id={fc.id} "
+                    f"({len(actual_supplies)} supplies)"
+                )
+                for s in actual_supplies:
+                    required_qty = int(round(fc.predicted_cases * s["ratio"]))
+                    if required_qty <= 0:
+                        continue
+                    req = SupplyRequirement(
+                        forecast_id=fc.id,
+                        supply_id=s["supply_id"],
+                        required_quantity=required_qty,
+                        requirement_date=fc.forecast_date,
+                        disease_type=fc.icd_code,
+                    )
+                    self.db.add(req)
+                    created_requirements.append(req)
+                continue
+
+            # Fallback — không có usage history → dùng ConversionModule
+            logger.info(
+                f"No actual usage for {fc.icd_code}, falling back to "
+                f"conversion_ratios"
+            )
+            conversion_module = ConversionModule(self.db)
+            try:
+                conversion_module.load_conversion_ratios()
+            except Exception as e:
+                logger.warning(
+                    f"Could not load conversion ratios from DB: {e}. "
+                    "Using default ratios."
+                )
+
             import pandas as pd
             requirements = conversion_module.calculate_requirements(
-                disease_type=fc.disease_type,
+                disease_type=fc.icd_code,
                 predicted_cases=fc.predicted_cases,
                 forecast_date=pd.Timestamp(fc.forecast_date),
             )
 
             for req_data in requirements:
                 supply_id = req_data.get("supply_id")
-
-                # If supply_id is None but we have a supply name, try to look it up
                 if supply_id is None and req_data.get("supply_name"):
                     supply = self.db.query(MedicalSupply).filter(
-                        MedicalSupply.name == req_data["supply_name"]
+                        MedicalSupply.ten_hoat_chat == req_data["supply_name"]
                     ).first()
                     supply_id = supply.id if supply else None
-
                 if supply_id is None:
                     logger.warning(
-                        f"Skipping requirement for supply '{req_data.get('supply_name')}': "
-                        "supply not found in database"
+                        f"Skipping requirement for supply "
+                        f"'{req_data.get('supply_name')}': not found"
                     )
                     continue
-
                 req = SupplyRequirement(
                     forecast_id=fc.id,
                     supply_id=supply_id,
                     required_quantity=req_data["required_quantity"],
                     requirement_date=req_data["forecast_date"],
-                    disease_type=fc.disease_type,
+                    disease_type=fc.icd_code,
                 )
                 self.db.add(req)
                 created_requirements.append(req)
@@ -303,6 +334,89 @@ class SupplyRequirementService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _compute_actual_ratios(
+        self,
+        disease_type: str,
+        location: Optional[str] = None,
+    ) -> List[Dict]:
+        """Tính ratio thực từ lịch sử case_supply_usage cho 1 disease_type.
+
+        Logic:
+        - Tổng hợp tất cả ca bệnh đã import (case_count) cho disease_type
+        - JOIN với case_supply_usage để lấy số lượng thực tế từng supply đã dùng
+        - ratio_per_case = SUM(usage.quantity) / SUM(case.case_count)
+        - location filter: nếu có, ưu tiên đúng tỉnh; nếu không có usage cho tỉnh
+          đó, nới lỏng dùng toàn quốc.
+
+        Trả về list dict: [{supply_id, supply_name, ratio, total_qty, total_cases}, ...]
+        Nếu không có lịch sử → list rỗng → caller fallback sang conversion_ratios.
+        """
+        from app.models.disease_case import DiseaseCase
+        from app.models.case_supply_usage import CaseSupplyUsage
+
+        def _query(loc_filter: Optional[str]) -> List[Dict]:
+            from app.models.case_supply_usage import CaseSupplyUsage as _CSU
+
+            # Bước 1: Chỉ lấy các CASE có ghi nhận supply usage (DISTINCT case_id từ
+            # case_supply_usage). Bỏ qua các ca chỉ có case_count, không có chi tiết
+            # thuốc — vì chia cả các ca này sẽ làm ratio bị pha loãng.
+            cases_q = (
+                self.db.query(DiseaseCase.id, DiseaseCase.case_count)
+                .filter(DiseaseCase.icd_code == disease_type)
+                .filter(DiseaseCase.id.in_(
+                    self.db.query(_CSU.case_id).distinct()
+                ))
+            )
+            if loc_filter:
+                cases_q = cases_q.filter(DiseaseCase.location == loc_filter)
+            cases = cases_q.all()
+            if not cases:
+                return []
+            case_ids = [c[0] for c in cases]
+            total_cases = sum(c[1] or 0 for c in cases)
+            if total_cases == 0:
+                return []
+
+            # Bước 2: Aggregate usage per supply trong đúng các case đó
+            usages = (
+                self.db.query(
+                    CaseSupplyUsage.supply_id,
+                    func.sum(CaseSupplyUsage.quantity).label("total_qty"),
+                )
+                .filter(CaseSupplyUsage.case_id.in_(case_ids))
+                .group_by(CaseSupplyUsage.supply_id)
+                .all()
+            )
+            if not usages:
+                return []
+
+            results: List[Dict] = []
+            for supply_id, total_qty in usages:
+                total_qty = int(total_qty or 0)
+                if total_qty <= 0:
+                    continue
+                supply = self.db.query(MedicalSupply).filter(
+                    MedicalSupply.id == supply_id
+                ).first()
+                if not supply:
+                    continue
+                results.append({
+                    "supply_id": supply_id,
+                    "supply_name": supply.name,
+                    "ratio": total_qty / total_cases,
+                    "total_qty": total_qty,
+                    "total_cases": total_cases,
+                })
+            return results
+
+        # Ưu tiên đúng tỉnh nếu có
+        if location:
+            data = _query(location)
+            if data:
+                return data
+        # Fallback toàn quốc cho cùng disease
+        return _query(None)
 
     def _enrich_requirement(self, req: SupplyRequirement) -> Dict:
         """Build a dict from a SupplyRequirement ORM object, including stock info."""

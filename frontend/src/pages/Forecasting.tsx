@@ -5,8 +5,8 @@ import {
   useAnalyzeForecast,
   useDiseaseOptions,
   useForecastHistory,
-  useRegionOptions,
 } from '../hooks/useForecastAnalysis';
+import api from '../services/api';
 import type { AnalyzeResponse } from '../services/forecastAnalysisService';
 import { forecastAnalysisService } from '../services/forecastAnalysisService';
 import ForecastFilterBar, {
@@ -48,7 +48,42 @@ export default function Forecasting() {
   const [exporting, setExporting] = useState(false);
 
   const { data: diseases = [] } = useDiseaseOptions();
-  const { data: regions = [] } = useRegionOptions();
+
+  // Map cascade tỉnh → list quận có data thực trong DB (gộp từ disease + environmental)
+  const [regionDistricts, setRegionDistricts] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [d1, d2] = await Promise.all([
+          api
+            .get('/disease-cases/distinct-values')
+            .then((r) => r.data?.region_districts ?? {})
+            .catch(() => ({})),
+          api
+            .get('/environmental/distinct-values')
+            .then((r) => r.data?.province_districts ?? {})
+            .catch(() => ({})),
+        ]);
+        const merged: Record<string, string[]> = {};
+        const addAll = (m: Record<string, string[]>) => {
+          for (const [prov, dists] of Object.entries(m)) {
+            for (const d of dists as string[]) {
+              if (!prov || !d) continue;
+              merged[prov] = merged[prov] || [];
+              if (!merged[prov].includes(d)) merged[prov].push(d);
+            }
+          }
+        };
+        addAll(d1 as Record<string, string[]>);
+        addAll(d2 as Record<string, string[]>);
+        setRegionDistricts(merged);
+      } catch {
+        /* ignore */
+      }
+    };
+    load();
+  }, []);
+
   const analyze = useAnalyzeForecast();
 
   // Lịch sử dự báo — tự refetch khi analyze thành công
@@ -67,9 +102,16 @@ export default function Forecasting() {
       return;
     }
     const [yStr, mStr] = filters.month.split('-');
+    // Ưu tiên quận/huyện > tỉnh > null (toàn quốc)
+    const regionValue =
+      filters.ward !== 'all'
+        ? filters.ward
+        : filters.province !== 'all'
+        ? filters.province
+        : null;
     const payload = {
       disease_type: filters.disease,
-      region: filters.ward !== 'all' ? filters.ward : null,
+      region: regionValue,
       target_month: Number(mStr),
       target_year: Number(yStr),
     };
@@ -159,7 +201,7 @@ export default function Forecasting() {
         onChange={setFilters}
         onAnalyze={runAnalyze}
         diseases={diseases}
-        regions={regions}
+        regionDistricts={regionDistricts}
         isLoading={analyze.isPending}
       />
 

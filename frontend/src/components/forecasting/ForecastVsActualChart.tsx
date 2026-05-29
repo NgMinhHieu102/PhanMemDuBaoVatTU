@@ -28,6 +28,25 @@ export default function ForecastVsActualChart({
   const colorMap = mapYearsToColors(years, targetYear);
   const targetMonthKey = `T${targetMonth}`;
 
+  // Split năm hiện tại thành 2 series: actual (nét liền) + forecast (nét đứt)
+  // Logic: với mỗi row, thêm 2 field mới
+  //   <year>_actual = giá trị khi tháng <= target_month - 1, null nếu là tháng dự báo
+  //   <year>_forecast = chỉ có giá trị tại 2 điểm cuối (target_month-1, target_month) để
+  //   tạo đoạn nối từ actual sang forecast bằng nét đứt.
+  const targetKey = String(targetYear);
+  const enriched = data.map((row, idx) => {
+    const monthIdx = idx + 1; // T1 = idx 0
+    const value = row[targetKey];
+    const isForecastMonth = monthIdx === targetMonth;
+    const isLastActual = monthIdx === targetMonth - 1;
+    return {
+      ...row,
+      [`${targetKey}_actual`]: isForecastMonth ? null : value,
+      [`${targetKey}_forecast`]:
+        isForecastMonth || isLastActual ? value : null,
+    };
+  });
+
   return (
     <div className="bg-white rounded-2xl border border-neutral-200 p-5">
       <div className="flex items-start justify-between mb-4 gap-4">
@@ -39,7 +58,7 @@ export default function ForecastVsActualChart({
 
       <div className="h-72 sm:h-80">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+          <LineChart data={enriched} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" vertical={false} />
             <XAxis
               dataKey="month"
@@ -81,16 +100,47 @@ export default function ForecastVsActualChart({
             {years.map((y) => {
               const color = colorMap[y];
               const isTarget = y === targetYear;
+              if (isTarget) {
+                // Năm hiện tại: chia 2 line — actual nét liền, forecast nét đứt
+                return [
+                  <Line
+                    key={`${y}-actual`}
+                    type="monotone"
+                    dataKey={`${y}_actual`}
+                    name={`${y} (Hiện tại)`}
+                    stroke={color}
+                    strokeWidth={3}
+                    dot={{ r: 4, fill: color }}
+                    activeDot={{ r: 6 }}
+                    connectNulls={false}
+                    isAnimationActive
+                    legendType="none"
+                  />,
+                  <Line
+                    key={`${y}-forecast`}
+                    type="monotone"
+                    dataKey={`${y}_forecast`}
+                    name={`${y} (Dự báo)`}
+                    stroke={color}
+                    strokeWidth={3}
+                    strokeDasharray="6 4"
+                    dot={{ r: 4, fill: color }}
+                    activeDot={{ r: 6 }}
+                    connectNulls={false}
+                    isAnimationActive
+                    legendType="none"
+                  />,
+                ];
+              }
               return (
                 <Line
                   key={y}
                   type="monotone"
                   dataKey={String(y)}
-                  name={isTarget ? `${y} (Hiện tại)` : String(y)}
+                  name={String(y)}
                   stroke={color}
-                  strokeWidth={isTarget ? 3 : 2}
-                  strokeDasharray={isTarget ? '6 4' : '0'}
-                  dot={isTarget ? { r: 4, fill: color } : false}
+                  strokeWidth={2}
+                  dot={false}
                   activeDot={{ r: 6 }}
                   isAnimationActive
                 />

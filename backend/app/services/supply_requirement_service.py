@@ -237,15 +237,107 @@ class SupplyRequirementService:
         ).delete(synchronize_session="fetch")
         self.db.flush()
 
+        # ⭐ Tránh đếm trùng theo khu vực chồng lấn: với mỗi (icd, tháng), chỉ
+        # giữ requirements của forecast MỚI NHẤT. Xoá requirements của mọi
+        # forecast khác cùng (icd, forecast_month) — vì "Toàn thành phố",
+        # "TP. HCM", "Quận 1" chồng lấn nhau, cộng dồn sẽ sai.
+        from sqlalchemy import extract as _extract
+        stale_forecast_ids = []
+        for fc in forecast_batch:
+            others = (
+                self.db.query(DiseaseForecast.id)
+                .filter(
+                    DiseaseForecast.icd_code == fc.icd_code,
+                    DiseaseForecast.forecast_month == fc.forecast_month,
+                    DiseaseForecast.id != fc.id,
+                )
+                .all()
+            )
+            stale_forecast_ids.extend([o[0] for o in others])
+        if stale_forecast_ids:
+            self.db.query(SupplyRequirement).filter(
+                SupplyRequirement.forecast_id.in_(stale_forecast_ids)
+            ).delete(synchronize_session="fetch")
+            self.db.flush()
+            logger.info(
+                "Cleared requirements of %d overlapping-region forecasts "
+                "to avoid double counting", len(stale_forecast_ids),
+            )
+
         # Compute requirements for each forecast record in the batch.
         # Priority order:
+        #   0) ⭐ severity_rate × disease_supply_norm (logic chuẩn mục 4-7).
+        #      Phân bổ ca theo Nhẹ/TB/Nặng × định mức × (1 + 15% dự phòng).
         #   1) Ratio thực từ case_supply_usage (lịch sử ca bệnh đã import từ CSV).
         #      Chỉ dùng các thuốc đã được dùng cho ĐÚNG disease_type này — tránh
         #      đề xuất thuốc của bệnh khác.
         #   2) Fallback ConversionModule (conversion_ratios cấu hình thủ công).
+        from app.models.severity_rate import SeverityRate
+        from app.models.disease_supply_norm import DiseaseSupplyNorm
+
+        DEFAULT_BUFFER_RATE = 15.0
         created_requirements: List[SupplyRequirement] = []
 
         for fc in forecast_batch:
+            # ── Path 0: severity_rate × disease_supply_norm (chuẩn mới) ──
+            severity = (
+                self.db.query(SeverityRate)
+                .filter(SeverityRate.icd_code == fc.icd_code)
+                .first()
+            )
+            norms = (
+                self.db.query(DiseaseSupplyNorm, MedicalSupply)
+                .join(MedicalSupply, MedicalSupply.id == DiseaseSupplyNorm.supply_id)
+                .filter(DiseaseSupplyNorm.icd_code == fc.icd_code)
+                .all()
+            )
+
+            if severity and norms:
+                logger.info(
+                    f"Using severity_rate × disease_supply_norm for forecast id={fc.id} "
+                    f"({fc.icd_code}, predicted={fc.predicted_cases})"
+                )
+                # Phân bổ ca theo Nhẹ/TB/Nặng (mục 5.1)
+                mild_cases = round(fc.predicted_cases * float(severity.mild_rate) / 100)
+                moderate_cases = round(fc.predicted_cases * float(severity.moderate_rate) / 100)
+                severe_cases = fc.predicted_cases - mild_cases - moderate_cases
+                if severe_cases < 0:
+                    severe_cases = 0
+
+                # Group norms by supply_id
+                supply_map: Dict[int, Dict[str, int]] = {}
+                for norm, supply in norms:
+                    sid = supply.id
+                    if sid not in supply_map:
+                        supply_map[sid] = {"mild": 0, "moderate": 0, "severe": 0}
+                    if norm.severity in ("mild", "moderate", "severe"):
+                        supply_map[sid][norm.severity] = norm.quantity_per_case
+
+                for sid, qty_by_severity in supply_map.items():
+                    # Nhu cầu trước dự phòng = Σ(ca × định mức) (mục 6)
+                    need_before = (
+                        mild_cases * qty_by_severity["mild"]
+                        + moderate_cases * qty_by_severity["moderate"]
+                        + severe_cases * qty_by_severity["severe"]
+                    )
+                    if need_before <= 0:
+                        continue
+                    # Nhu cầu cuối = need_before × (1 + buffer%)
+                    final_need = round(need_before * (1 + DEFAULT_BUFFER_RATE / 100))
+                    if final_need <= 0:
+                        continue
+                    req = SupplyRequirement(
+                        forecast_id=fc.id,
+                        supply_id=sid,
+                        required_quantity=final_need,
+                        requirement_date=fc.forecast_date,
+                        disease_type=fc.icd_code,
+                    )
+                    self.db.add(req)
+                    created_requirements.append(req)
+                continue
+
+            # ── Path 1: actual usage history (legacy fallback) ──
             actual_supplies = self._compute_actual_ratios(
                 disease_type=fc.icd_code,
                 location=fc.location,

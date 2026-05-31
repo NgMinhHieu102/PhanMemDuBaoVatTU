@@ -28,7 +28,7 @@ import {
 import { useUIStore } from '../store/uiStore';
 import api from '../services/api';
 import LoadingSpinner from '../components/common/LoadingSpinner';
-import { VN_PROVINCES, VN_PROVINCES_SET, getDistrictsForRegion } from '../utils/vietnamRegions';
+import { VN_PROVINCES, VN_PROVINCES_SET, getDistrictsForRegion, normalizeProvinceName } from '../utils/vietnamRegions';
 
 const PAGE_SIZE = 5;
 
@@ -162,10 +162,11 @@ export default function Weather() {
         distinctRes.data?.province_districts ?? {};
 
       // Province dropdown: chỉ giữ các giá trị thực sự là tỉnh
+      // Chuẩn hoá tên ("Thành phố Hồ Chí Minh" → "TP. Hồ Chí Minh") trước khi so master.
       const LEGACY_ALLOW = new Set(['Toàn thành phố']);
-      const extraFromAdminDb = [...adminProvinces, ...dbProvinces].filter(
-        (n) => VN_PROVINCES_SET.has(n) || LEGACY_ALLOW.has(n),
-      );
+      const extraFromAdminDb = [...adminProvinces, ...dbProvinces]
+        .map((n) => normalizeProvinceName(n))
+        .filter((n) => VN_PROVINCES_SET.has(n) || LEGACY_ALLOW.has(n));
       const merged = Array.from(
         new Set<string>([...VN_PROVINCES, ...extraFromAdminDb]),
       );
@@ -184,7 +185,15 @@ export default function Weather() {
       });
       setDistricts(mergedDistricts);
 
-      setProvinceDistricts(dbCascade);
+      // Chuẩn hoá key cascade để khớp value dropdown (master)
+      const normCascade: Record<string, string[]> = {};
+      for (const [prov, dists] of Object.entries(dbCascade)) {
+        const key = normalizeProvinceName(prov);
+        normCascade[key] = Array.from(
+          new Set([...(normCascade[key] ?? []), ...(dists as string[])]),
+        );
+      }
+      setProvinceDistricts(normCascade);
     } catch {
       /* ignore */
     }
@@ -213,7 +222,7 @@ export default function Weather() {
         const m = it.recorded_at?.slice(0, 7);
         if (m !== filterMonth) return false;
       }
-      if (filterProvince !== 'all' && it.location !== filterProvince) return false;
+      if (filterProvince !== 'all' && normalizeProvinceName(it.location) !== normalizeProvinceName(filterProvince)) return false;
       if (filterDistrict !== 'all' && it.district_ward !== filterDistrict) return false;
       return true;
     });
@@ -499,7 +508,7 @@ export default function Weather() {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-neutral-600 mb-1.5">Quận/Huyện</label>
+            <label className="block text-sm font-medium text-neutral-600 mb-1.5">Phường/Xã</label>
             <div className="relative">
               <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
               <select
@@ -511,7 +520,7 @@ export default function Weather() {
                 <option value="all">
                   {filterProvince === 'all'
                     ? 'Chọn Tỉnh/Thành trước'
-                    : 'Tất cả Quận/Huyện'}
+                    : 'Tất cả Phường/Xã'}
                 </option>
                 {filterProvince !== 'all' &&
                   getDistrictsForRegion(filterProvince, provinceDistricts).map((d) => (
@@ -806,7 +815,7 @@ export default function Weather() {
                   />
                 )}
               </Field>
-              <Field label="Quận/Huyện">
+              <Field label="Phường/Xã">
                 {(() => {
                   const list = getDistrictsForRegion(form.province, provinceDistricts);
                   const isInList = form.district && list.includes(form.district);

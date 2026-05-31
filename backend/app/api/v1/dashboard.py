@@ -96,6 +96,23 @@ def _cache_set(key: str, value: Any) -> None:
         logger.debug("Cache SET failed for key=%s: %s", key, exc)
 
 
+def invalidate_dashboard_cache() -> None:
+    """Xoá toàn bộ cache dashboard:* — gọi sau khi data thay đổi (forecast,
+    recommendation, alert) để dashboard phản ánh ngay thay vì chờ TTL 5 phút.
+    Silently fails nếu Redis không sẵn.
+    """
+    client = _get_redis()
+    if client is None:
+        return
+    try:
+        keys = client.keys("dashboard:*")
+        if keys:
+            client.delete(*keys)
+            logger.info("Invalidated %d dashboard cache keys", len(keys))
+    except Exception as exc:
+        logger.debug("Cache invalidate failed: %s", exc)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _stock_risk_level(current_stock: int, safety_stock: int) -> str:

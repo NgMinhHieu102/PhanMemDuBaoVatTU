@@ -79,7 +79,7 @@ export default function ForecastFilterBar({
           </SelectInput>
         </FilterField>
 
-        <FilterField label="Quận/Huyện">
+        <FilterField label="Phường/Xã">
           <SelectInput
             value={filters.ward}
             onChange={(v) => update({ ward: v })}
@@ -88,7 +88,7 @@ export default function ForecastFilterBar({
             <option value="all">
               {filters.province === 'all'
                 ? 'Chọn Tỉnh/Thành trước'
-                : 'Tất cả quận/huyện'}
+                : 'Tất cả phường/xã'}
             </option>
             {districtList.map((d) => (
               <option key={d} value={d}>

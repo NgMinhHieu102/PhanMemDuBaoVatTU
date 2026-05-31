@@ -8,6 +8,32 @@
 // 5 thành phố trực thuộc trung ương — luôn xếp lên đầu dropdown
 const MAJOR_CITIES = ['TP. Hồ Chí Minh', 'Hà Nội', 'Đà Nẵng', 'Hải Phòng', 'Cần Thơ'];
 
+/**
+ * Chuẩn hoá tên tỉnh/thành về dạng dùng trong master VN_REGIONS.
+ *
+ * Data thật (data_HM) dùng tên đầy đủ "Thành phố Hồ Chí Minh", "Thành phố Hà Nội"...
+ * còn master dùng dạng ngắn "TP. Hồ Chí Minh", "Hà Nội". Hàm này map 2 biến thể
+ * về 1 key chung để dropdown + cascade phường/xã khớp nhau.
+ */
+const PROVINCE_ALIASES: Record<string, string> = {
+  'Thành phố Hồ Chí Minh': 'TP. Hồ Chí Minh',
+  'Thành Phố Hồ Chí Minh': 'TP. Hồ Chí Minh',
+  'Hồ Chí Minh': 'TP. Hồ Chí Minh',
+  'TP Hồ Chí Minh': 'TP. Hồ Chí Minh',
+  'TPHCM': 'TP. Hồ Chí Minh',
+  'Thành phố Hà Nội': 'Hà Nội',
+  'Thành Phố Hà Nội': 'Hà Nội',
+  'Thành phố Đà Nẵng': 'Đà Nẵng',
+  'Thành phố Hải Phòng': 'Hải Phòng',
+  'Thành phố Cần Thơ': 'Cần Thơ',
+};
+
+export function normalizeProvinceName(name: string): string {
+  if (!name) return name;
+  const trimmed = name.trim();
+  return PROVINCE_ALIASES[trimmed] ?? trimmed;
+}
+
 // Map tỉnh/thành → list đơn vị hành chính cấp huyện
 export const VN_REGIONS: Record<string, string[]> = {
   // ── 5 thành phố trực thuộc trung ương ──────────────────────────────
@@ -423,10 +449,15 @@ export function getDistrictsForRegion(
   region: string,
   dbCascade?: Record<string, string[]>,
 ): string[] {
-  const master = VN_REGIONS[region] ?? [];
-  const fromDb = dbCascade?.[region] ?? [];
+  const canonical = normalizeProvinceName(region);
+  // Master có thể dùng key chuẩn; cascade DB có thể dùng tên gốc — gộp cả 2.
+  const master = VN_REGIONS[canonical] ?? VN_REGIONS[region] ?? [];
+  const fromDb = [
+    ...(dbCascade?.[region] ?? []),
+    ...(dbCascade?.[canonical] ?? []),
+  ];
   const masterSet = new Set(master);
-  const extras = fromDb
+  const extras = Array.from(new Set(fromDb))
     .filter((d) => d && !masterSet.has(d))
     .sort((a, b) => a.localeCompare(b, 'vi'));
   return [...master, ...extras];

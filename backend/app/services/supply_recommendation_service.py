@@ -312,18 +312,35 @@ class SupplyRecommendationService:
         Ưu tiên:
         1. disease_forecast (nếu đã chạy phân tích)
         2. Fallback: tổng case_count từ disease_cases (dữ liệu thực tế)
+
+        Lưu ý quan trọng về địa lý:
+        - Nếu CHỈ ĐỊNH location → lấy đúng forecast mới nhất của khu vực đó.
+        - Nếu KHÔNG chỉ định (toàn quốc) → KHÔNG được SUM tất cả forecast vì các
+          khu vực chồng lấn ("Toàn thành phố" ⊇ "TP. Hồ Chí Minh" ⊇ "Quận 1")
+          sẽ bị đếm trùng. Thay vào đó lấy bản ghi forecast MỚI NHẤT
+          (theo created_at) cho (icd, tháng) — phản ánh lần phân tích gần nhất.
         """
-        # 1. Thử lấy từ disease_forecast
-        q1 = self.db.query(func.sum(DiseaseForecast.predicted_cases)).filter(
+        base = self.db.query(DiseaseForecast).filter(
             DiseaseForecast.icd_code == icd_code,
             extract("year", DiseaseForecast.forecast_date) == forecast_month.year,
             extract("month", DiseaseForecast.forecast_date) == forecast_month.month,
         )
+
         if location:
-            q1 = q1.filter(DiseaseForecast.location == location)
-        forecast_total = int(q1.scalar() or 0)
-        if forecast_total > 0:
-            return forecast_total
+            # Đúng 1 khu vực → lấy forecast mới nhất của khu vực đó
+            from app.utils.province_alias import province_aliases
+            latest = (
+                base.filter(DiseaseForecast.location.in_(province_aliases(location)))
+                .order_by(DiseaseForecast.created_at.desc())
+                .first()
+            )
+            if latest and latest.predicted_cases:
+                return int(latest.predicted_cases)
+        else:
+            # Toàn quốc → lấy forecast mới nhất bất kể khu vực (tránh đếm trùng)
+            latest = base.order_by(DiseaseForecast.created_at.desc()).first()
+            if latest and latest.predicted_cases:
+                return int(latest.predicted_cases)
 
         # 2. Fallback: tổng case_count thực tế
         q2 = self.db.query(func.sum(DiseaseCase.case_count)).filter(
@@ -332,7 +349,8 @@ class SupplyRecommendationService:
             extract("month", DiseaseCase.recorded_at) == forecast_month.month,
         )
         if location:
-            q2 = q2.filter(DiseaseCase.location == location)
+            from app.utils.province_alias import province_aliases
+            q2 = q2.filter(DiseaseCase.location.in_(province_aliases(location)))
         return int(q2.scalar() or 0)
 
     # ── Persistence ─────────────────────────────────────────────────────────

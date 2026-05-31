@@ -310,7 +310,11 @@ async def import_disease_cases_csv(
         from app.models.medical_supply import MedicalSupply
         from app.models.case_supply_usage import CaseSupplyUsage
 
-        has_supply_col = "supply_name" in headers
+        has_supply_col = (
+            "supply_name" in headers
+            or "supply_code" in headers
+            or "drug_code" in headers
+        )
 
         # Bước 1: gom theo key (month, disease_key, region, district_ward) để gộp các dòng
         # supply chi tiết về cùng 1 ca bệnh.
@@ -323,6 +327,8 @@ async def import_disease_cases_csv(
             cases_raw = (row.get("cases") or "").strip()
             note = (row.get("note") or "").strip() or None
             supply_name = (row.get("supply_name") or "").strip() if has_supply_col else ""
+            supply_code = (row.get("supply_code") or "").strip() if has_supply_col else ""
+            drug_code = (row.get("drug_code") or "").strip() if has_supply_col else ""
             supply_qty_raw = (row.get("supply_quantity") or "").strip() if has_supply_col else ""
             supply_unit = (row.get("supply_unit") or "").strip() if has_supply_col else ""
             supply_category = (row.get("supply_category") or "").strip() if has_supply_col else ""
@@ -396,8 +402,8 @@ async def import_disease_cases_csv(
                 if note and not entry["note"]:
                     entry["note"] = note
 
-            # Nếu dòng có supply_name + quantity, gộp vào supplies
-            if supply_name:
+            # Nếu dòng có supply (theo code hoặc name) + quantity, gộp vào supplies
+            if supply_name or supply_code or drug_code:
                 try:
                     supply_qty_int = int(float(supply_qty_raw)) if supply_qty_raw else 0
                 except ValueError:
@@ -416,48 +422,67 @@ async def import_disease_cases_csv(
                     continue
                 entry["supplies"].append({
                     "name": supply_name,
+                    "supply_code": supply_code,
+                    "drug_code": drug_code,
                     "qty": supply_qty_int,
                     "unit": supply_unit or "đơn vị",
                     "category": supply_category or "Khác",
                 })
 
         # Bước 2: persist từng group thành DiseaseCase + CaseSupplyUsage
-        # Cache supply lookup theo name (lower) để tránh query lại nhiều lần
+        # Cache supply lookup để tránh query lại nhiều lần
         supply_cache: dict[str, MedicalSupply] = {}
 
-        def _get_or_create_supply(name: str, unit: str, category: str) -> MedicalSupply:
-            key = name.lower().strip()
-            if key in supply_cache:
-                return supply_cache[key]
-            # Tìm theo ten_hoat_chat hoặc supply_code
-            existing_sup = (
-                db.query(MedicalSupply)
-                .filter(
-                    (func.lower(MedicalSupply.ten_hoat_chat) == key)
-                    | (func.lower(MedicalSupply.supply_code) == key)
+        def _get_or_create_supply(
+            name: str, unit: str, category: str,
+            supply_code: str = "", drug_code: str = "",
+        ) -> MedicalSupply:
+            # Ưu tiên match theo mã (supply_code → drug_code) vì chính xác hơn tên.
+            cache_key = (supply_code or drug_code or name).lower().strip()
+            if cache_key in supply_cache:
+                return supply_cache[cache_key]
+
+            existing_sup = None
+            if supply_code:
+                existing_sup = (
+                    db.query(MedicalSupply)
+                    .filter(func.lower(MedicalSupply.supply_code) == supply_code.lower())
+                    .first()
                 )
-                .first()
-            )
+            if existing_sup is None and drug_code:
+                existing_sup = (
+                    db.query(MedicalSupply)
+                    .filter(func.lower(MedicalSupply.drug_code) == drug_code.lower())
+                    .first()
+                )
+            if existing_sup is None and name:
+                key = name.lower().strip()
+                existing_sup = (
+                    db.query(MedicalSupply)
+                    .filter(
+                        (func.lower(MedicalSupply.ten_hoat_chat) == key)
+                        | (func.lower(MedicalSupply.supply_code) == key)
+                    )
+                    .first()
+                )
             if existing_sup is None:
                 # Không tìm thấy → tạo placeholder (chỉ điền tối thiểu)
-                # Lưu ý: theo yêu cầu mới, chỉ nên import 15 thuốc/vật tư đã định sẵn
                 logger.warning(
-                    "Supply '%s' không khớp 15 thuốc/vật tư đã định, tạo placeholder.",
-                    name,
+                    "Supply code=%s name='%s' không khớp 15 thuốc/vật tư, tạo placeholder.",
+                    supply_code or drug_code, name,
                 )
-                # Tạo supply_code và drug_code tự động
-                next_code = f"VT_AUTO_{int(datetime.now().timestamp())}"
+                next_code = supply_code or f"VT_AUTO_{int(datetime.now().timestamp())}"
                 existing_sup = MedicalSupply(
                     supply_code=next_code,
-                    drug_code=next_code,
-                    ten_hoat_chat=name,
+                    drug_code=drug_code or next_code,
+                    ten_hoat_chat=name or next_code,
                     unit=unit,
                     group_name=category or "Khác",
                     category=category,
                 )
                 db.add(existing_sup)
                 db.flush()
-            supply_cache[key] = existing_sup
+            supply_cache[cache_key] = existing_sup
             return existing_sup
 
         for entry in grouped.values():
@@ -522,7 +547,9 @@ async def import_disease_cases_csv(
                 seen_supply_ids: set[int] = set()
                 for sup in entry["supplies"]:
                     supply_obj = _get_or_create_supply(
-                        sup["name"], sup["unit"], sup["category"]
+                        sup["name"], sup["unit"], sup["category"],
+                        supply_code=sup.get("supply_code", ""),
+                        drug_code=sup.get("drug_code", ""),
                     )
                     if supply_obj.id in seen_supply_ids:
                         # Nếu cùng ca cùng thuốc lặp 2 lần → cộng dồn

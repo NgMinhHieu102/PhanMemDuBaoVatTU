@@ -12,7 +12,8 @@ export function useDashboardSummary() {
     staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
     enabled: isAuthenticated,
     retry: false,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
 }
 
@@ -21,9 +22,12 @@ export function useCaseTrend(months = 6) {
   return useQuery({
     queryKey: ['dashboard', 'case-trend', months],
     queryFn: () => dashboardService.getCaseTrend(months),
+    refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
+    staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
     enabled: isAuthenticated,
     retry: false,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
 }
 
@@ -32,9 +36,12 @@ export function useDemandVsStock(topN = 5) {
   return useQuery({
     queryKey: ['dashboard', 'demand-vs-stock', topN],
     queryFn: () => dashboardService.getDemandVsStock(topN),
+    refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
+    staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
     enabled: isAuthenticated,
     retry: false,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
 }
 
@@ -47,6 +54,7 @@ export function useDashboardCriticalAlerts(limit = 5) {
     staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
     enabled: isAuthenticated,
     retry: false,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
 }

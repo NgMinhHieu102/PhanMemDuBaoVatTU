@@ -17,7 +17,9 @@ export const epidemiologyService = {
     disease_type?: DiseaseType;
     location?: string;
   }): Promise<DiseaseCase[]> {
-    const response = await api.get<DiseaseCase[]>('/disease-cases', { params });
+    // Trailing slash bắt buộc — nếu thiếu, backend trả 307 redirect và một số
+    // môi trường (proxy/CORS) làm rớt query params hoặc Authorization header.
+    const response = await api.get<DiseaseCase[]>('/disease-cases/', { params });
     return response.data;
   },
 

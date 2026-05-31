@@ -382,7 +382,8 @@ async def env_trend(
         .filter(extract('month', EnvironmentalData.recorded_at) == target_month)
     )
     if province:
-        q = q.filter(EnvironmentalData.location == province)
+        from app.utils.province_alias import province_aliases
+        q = q.filter(EnvironmentalData.location.in_(province_aliases(province)))
     if district:
         q = q.filter(EnvironmentalData.district_ward == district)
     rows = q.group_by('y').order_by('y').all()

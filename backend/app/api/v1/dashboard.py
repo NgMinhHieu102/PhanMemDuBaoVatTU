@@ -34,6 +34,7 @@ from app.models.disease_case import DiseaseCase
 from app.models.disease_forecast import DiseaseForecast
 from app.models.inventory import Inventory
 from app.models.medical_supply import MedicalSupply
+from app.models.supply_recommendation import SupplyRecommendation
 from app.models.supply_requirement import SupplyRequirement
 from app.models.user import User
 
@@ -577,7 +578,7 @@ async def get_dashboard_summary(
         else 0.0
     )
 
-    # 2. Số ca dự báo tháng tới
+    # 2. Số ca dự báo tháng tới - Lấy từ SupplyRecommendation thay vì DiseaseForecast
     if first_of_this_month.month == 12:
         first_of_next_month = first_of_this_month.replace(year=first_of_this_month.year + 1, month=1)
         end_of_next_month = first_of_next_month.replace(month=2) - timedelta(days=1)
@@ -588,11 +589,12 @@ async def get_dashboard_summary(
         else:
             end_of_next_month = first_of_next_month.replace(month=first_of_next_month.month + 1) - timedelta(days=1)
 
+    # Lấy dự báo từ SupplyRecommendation (tính theo số ca dự báo)
     predicted_next = (
-        db.query(func.coalesce(func.sum(DiseaseForecast.predicted_cases), 0))
+        db.query(func.coalesce(func.sum(SupplyRecommendation.predicted_cases), 0))
         .filter(
-            DiseaseForecast.forecast_date >= first_of_next_month,
-            DiseaseForecast.forecast_date <= end_of_next_month,
+            SupplyRecommendation.forecast_month >= first_of_next_month,
+            SupplyRecommendation.forecast_month <= end_of_next_month,
         )
         .scalar()
         or 0

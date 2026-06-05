@@ -435,7 +435,8 @@ async def _do_inventory_import(file: "UploadFile", db: Session, current_user: Us
 
         # Parse số
         try:
-            cur_stock = int(float((row.get("current_stock") or "0").strip() or 0))
+            # Hỗ trợ cả current_stock và stock_quantity
+            cur_stock = int(float((row.get("current_stock") or row.get("stock_quantity") or "0").strip() or 0))
             saf_stock = int(float((row.get("safety_stock") or "0").strip() or 0))
         except ValueError:
             skipped += 1

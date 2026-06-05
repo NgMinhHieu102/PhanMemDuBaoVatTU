@@ -8,6 +8,7 @@ import {
   ArrowDownRight,
   Download,
   Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -40,10 +41,17 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [exporting, setExporting] = useState(false);
 
-  const { data: summary, isLoading: loadingSummary, dataUpdatedAt } = useDashboardSummary();
-  const { data: trend, isLoading: loadingTrend } = useCaseTrend(6);
-  const { data: demand, isLoading: loadingDemand } = useDemandVsStock(5);
-  const { data: alerts, isLoading: loadingAlerts } = useDashboardCriticalAlerts(5);
+  const { data: summary, isLoading: loadingSummary, dataUpdatedAt, refetch: refetchSummary } = useDashboardSummary();
+  const { data: trend, isLoading: loadingTrend, refetch: refetchTrend } = useCaseTrend(6);
+  const { data: demand, isLoading: loadingDemand, refetch: refetchDemand } = useDemandVsStock(5);
+  const { data: alerts, isLoading: loadingAlerts, refetch: refetchAlerts } = useDashboardCriticalAlerts(5);
+
+  const handleRefresh = () => {
+    refetchSummary();
+    refetchTrend();
+    refetchDemand();
+    refetchAlerts();
+  };
 
   useEffect(() => {
     setPageTitle('Dashboard Tổng quan');
@@ -94,19 +102,30 @@ export default function Dashboard() {
             Dữ liệu cập nhật lúc {lastUpdated}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={exporting}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-100 rounded-xl text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          {exporting ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
-          {exporting ? 'Đang xuất...' : 'Xuất báo cáo'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRefresh}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-200 rounded-xl text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+            title="Làm mới dữ liệu"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Làm mới
+          </button>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-100 rounded-xl text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {exporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {exporting ? 'Đang xuất...' : 'Xuất báo cáo'}
+          </button>
+        </div>
       </div>
 
       {/* KPI Row */}

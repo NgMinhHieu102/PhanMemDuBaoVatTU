@@ -122,7 +122,7 @@ export default function Weather() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/environmental/', { params: { limit: 100 } });
+      const res = await api.get('/environmental/', { params: { limit: 50000 } });
       setItems(res.data || []);
     } catch (err: any) {
       console.error('❌ Environmental API Error:', err);
@@ -288,7 +288,7 @@ export default function Weather() {
       filterProvince !== 'all' ? filterProvince : 'TP. Hồ Chí Minh';
     if (
       !window.confirm(
-        `Đồng bộ dữ liệu thời tiết từ Open-Meteo cho "${province}" (12 tháng quá khứ + 16 ngày dự báo)?`,
+        `Đồng bộ dữ liệu thời tiết từ Open-Meteo cho "${province}" (10 năm quá khứ + 16 ngày dự báo)?`,
       )
     ) {
       return;
@@ -296,7 +296,7 @@ export default function Weather() {
     setSyncingOpenMeteo(true);
     try {
       const res = await api.post('/environmental/sync-openmeteo', null, {
-        params: { province, months_back: 66, forecast_days: 16 },
+        params: { province, months_back: 120, forecast_days: 16 },
       });
       const d = res.data ?? {};
       alert(

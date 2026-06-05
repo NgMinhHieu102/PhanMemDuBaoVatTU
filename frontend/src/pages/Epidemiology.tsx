@@ -81,8 +81,9 @@ export default function Epidemiology() {
   const [formMonth, setFormMonth] = useState<string>(() =>
     new Date().toISOString().slice(0, 7),
   );
-  const [formDisease, setFormDisease] = useState<string>('dengue_fever');
+  const [formDisease, setFormDisease] = useState<string>('J20');
   const [formRegion, setFormRegion] = useState<string>('Thành phố Hồ Chí Minh');
+  const [formDistrict, setFormDistrict] = useState<string>('');
   const [formCases, setFormCases] = useState<number>(0);
   const [formNote, setFormNote] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -95,6 +96,9 @@ export default function Epidemiology() {
     errors: ImportError[];
     truncated: boolean;
   } | null>(null);
+
+  // Distinct values for region districts
+  const [regionDistricts, setRegionDistricts] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     setPageTitle('Quản Lý Dữ Liệu Bệnh');
@@ -284,6 +288,7 @@ export default function Epidemiology() {
     setFormMonth(row.recorded_at.slice(0, 7));
     setFormDisease(row.icd_code);
     setFormRegion(row.location);
+    setFormDistrict('');
     setFormCases(row.case_count);
     setFormNote(row.note ?? '');
     setFormError(null);

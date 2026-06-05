@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Download, Loader2, AlertCircle } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
 import {
@@ -151,8 +151,12 @@ export default function Forecasting() {
     }
   }, [diseases, filters.disease]);
 
-  const targetMonthNum = result?.forecast.target_month ?? Number(filters.month.split('-')[1]);
-  const targetYearNum = result?.forecast.target_year ?? Number(filters.month.split('-')[0]);
+  // Kết quả hiển thị lấy thẳng từ /analyze (backend đã dùng mô hình AI tính
+  // số ca + mức nguy cơ và lưu DB), nên card, biểu đồ, bảng đều nhất quán.
+  const displayResult = result;
+
+  const targetMonthNum = displayResult?.forecast.target_month ?? Number(filters.month.split('-')[1]);
+  const targetYearNum = displayResult?.forecast.target_year ?? Number(filters.month.split('-')[0]);
 
   return (
     <div className="space-y-5">
@@ -166,40 +170,42 @@ export default function Forecasting() {
             Phân tích đa biến dựa trên dữ liệu lịch sử và yếu tố thời tiết.
           </p>
         </div>
-        <button
-          type="button"
-          disabled={!result || exporting}
-          onClick={async () => {
-            if (!result?.forecast?.id) return;
-            try {
-              setExporting(true);
-              const blob = await forecastAnalysisService.exportForecastPdf(
-                result.forecast.id,
-              );
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `forecast_${result.forecast.id}.pdf`;
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-              URL.revokeObjectURL(url);
-            } catch (err) {
-              console.error(err);
-              alert('Không thể xuất báo cáo. Vui lòng thử lại.');
-            } finally {
-              setExporting(false);
-            }
-          }}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-200 rounded-xl text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {exporting ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
-          {exporting ? 'Đang xuất...' : 'Xuất báo cáo'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={!result || exporting}
+            onClick={async () => {
+              if (!result?.forecast?.id) return;
+              try {
+                setExporting(true);
+                const blob = await forecastAnalysisService.exportForecastPdf(
+                  result.forecast.id,
+                );
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `forecast_${result.forecast.id}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+              } catch (err) {
+                console.error(err);
+                alert('Không thể xuất báo cáo. Vui lòng thử lại.');
+              } finally {
+                setExporting(false);
+              }
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-200 rounded-xl text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {exporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
+            {exporting ? 'Đang xuất...' : 'Xuất báo cáo'}
+          </button>
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -243,27 +249,27 @@ export default function Forecasting() {
       )}
 
       {/* Result */}
-      {result && (
+      {displayResult && (
         <>
           {/* Row 1: Forecast card + Main chart */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             <div className="space-y-5 lg:col-span-1">
               <ForecastResultCard
-                predictedCases={result.forecast.predicted_cases}
-                diseaseLabel={result.forecast.disease_label}
-                region={result.forecast.region}
-                targetMonth={result.forecast.target_month}
-                targetYear={result.forecast.target_year}
-                riskLevel={result.forecast.risk_level}
-                riskLabel={result.forecast.risk_label}
+                predictedCases={displayResult.forecast.predicted_cases}
+                diseaseLabel={displayResult.forecast.disease_label}
+                region={displayResult.forecast.region}
+                targetMonth={displayResult.forecast.target_month}
+                targetYear={displayResult.forecast.target_year}
+                riskLevel={displayResult.forecast.risk_level}
+                riskLabel={displayResult.forecast.risk_label}
               />
-              <ModelExplanation bullets={result.explanation_bullets} />
+              <ModelExplanation bullets={displayResult.explanation_bullets} />
             </div>
 
             <div className="lg:col-span-2">
               <ForecastVsActualChart
-                data={result.charts.main as Array<Record<string, number | string>>}
-                years={result.charts.years}
+                data={displayResult.charts.main as Array<Record<string, number | string>>}
+                years={displayResult.charts.years}
                 targetYear={targetYearNum}
                 targetMonth={targetMonthNum}
               />
@@ -273,11 +279,11 @@ export default function Forecasting() {
           {/* Row 2: Comparison + Current year trend */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <ComparisonChart
-              data={result.charts.comparison}
+              data={displayResult.charts.comparison}
               targetMonth={targetMonthNum}
             />
             <CurrentYearTrendChart
-              data={result.charts.trend_current_year}
+              data={displayResult.charts.trend_current_year}
               targetYear={targetYearNum}
               upToMonth={targetMonthNum > 1 ? targetMonthNum - 1 : 1}
             />
@@ -285,14 +291,14 @@ export default function Forecasting() {
 
           {/* Row 3: Correlation chart full width */}
           <CorrelationChart
-            data={result.charts.correlation}
+            data={displayResult.charts.correlation}
             targetMonth={targetMonthNum}
-            coefficients={result.charts.correlation_coefficients}
+            coefficients={displayResult.charts.correlation_coefficients}
           />
 
           {/* Row 4: Dữ liệu ca bệnh gần đây */}
           <RecentMonthDataTable
-            key={result.forecast.id} // Force reload khi có forecast mới
+            key={displayResult.forecast.id} // Force reload khi có forecast mới
             currentMonth={targetMonthNum}
             currentYear={targetYearNum}
           />

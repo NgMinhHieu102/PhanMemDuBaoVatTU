@@ -293,6 +293,114 @@ async def list_regions(
     return [r[0] for r in rows if r[0]]
 
 
+# ── ML model: train + dự báo (MonthlyForecaster từ database) ──────────────────
+
+
+class TrainRequest(BaseModel):
+    region: Optional[str] = Field(
+        None, description="Khu vực train. None = gộp toàn quốc."
+    )
+
+
+class MLAnalyzeRequest(BaseModel):
+    disease_type: str = Field(..., description="Mã ICD (J20/J06/J02/J01) hoặc tên VN")
+    region: Optional[str] = Field(None, description="Khu vực, None = toàn quốc")
+    target_month: int = Field(..., ge=1, le=12)
+    target_year: int = Field(..., ge=2020, le=2100)
+
+
+@router.post("/train")
+async def train_models(
+    payload: TrainRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Train MonthlyForecaster cho 4 bệnh hô hấp từ dữ liệu trong database.
+
+    Học tương quan thời tiết (nguồn Open-Meteo trong environmental_data) +
+    xu hướng. Trả về độ chính xác (MAE/RMSE/MAPE/R²) cho từng bệnh.
+    """
+    from app.ai_engine.db_forecasting_service import DBForecastingService
+
+    region = payload.region.strip() if payload.region and payload.region != "all" else None
+    service = DBForecastingService(db)
+    results = service.train_all(region=region)
+
+    trained = [k for k, v in results.items() if v.get("status") == "trained"]
+    logger.info(
+        "ML train by user=%s region=%s: trained=%s",
+        current_user.username, region or "toàn quốc", trained,
+    )
+    return {
+        "status": "ok",
+        "region": region or "Toàn quốc",
+        "trained_count": len(trained),
+        "models": results,
+        "trained_at": datetime.now().isoformat(),
+    }
+
+
+@router.post("/ml-analyze")
+async def ml_analyze_forecast(
+    payload: MLAnalyzeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Dự báo số ca bằng mô hình ML (MonthlyForecaster).
+
+    Tự huấn luyện mô hình trên dữ liệu mới nhất trong DB rồi dự báo ngay,
+    nên kết quả luôn phản ánh dữ liệu hiện tại (không cần bước train riêng).
+    """
+    from app.ai_engine.db_forecasting_service import DBForecastingService
+
+    disease = _norm_disease(payload.disease_type)
+    region = payload.region.strip() if payload.region and payload.region != "all" else None
+    service = DBForecastingService(db)
+
+    try:
+        result = service.analyze(
+            icd_code=disease,
+            target_month=payload.target_month,
+            target_year=payload.target_year,
+            region=region,
+        )
+    except ValueError as exc:
+        # Không đủ dữ liệu để train
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        logger.error("ML analyze failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Lỗi dự báo ML: {exc}")
+
+    metrics = result.get("model_metrics", {}) or {}
+    # Tính mức nguy cơ dựa trên SỐ CA AI vs ca nền (để khớp với số hiển thị)
+    baseline_val = (result.get("formula_details", {}) or {}).get("baseline", 0) or 0
+    risk_level, increase_pct = _classify_risk(
+        result.get("predicted_cases", 0), float(baseline_val)
+    )
+    return {
+        "disease_type": disease,
+        "disease_label": result.get("disease_label"),
+        "region": result.get("region"),
+        "target_month": payload.target_month,
+        "target_year": payload.target_year,
+        "predicted_cases": result.get("predicted_cases"),
+        "confidence_lower": result.get("confidence_lower"),
+        "confidence_upper": result.get("confidence_upper"),
+        "risk_level": risk_level,
+        "risk_label": _risk_label(risk_level),
+        "increase_pct": round(increase_pct, 1),
+        "formula_details": result.get("formula_details"),
+        "forecast_weather": result.get("forecast_weather"),
+        "accuracy": {
+            "mae": round(metrics.get("mae", 0), 2),
+            "rmse": round(metrics.get("rmse", 0), 2),
+            "mape": round(metrics.get("mape", 0), 2),
+            "r2": round(metrics.get("r2", 0), 3),
+            "n_samples": metrics.get("n_samples", 0),
+        },
+    }
+
+
 @router.post("/analyze")
 async def analyze_forecast(
     payload: AnalyzeRequest,
@@ -371,6 +479,38 @@ async def analyze_forecast(
          history_w_avg, weather_bullets, trend_bullet, baseline_years) = _compute_one_region(region)
 
     # predicted đã được tính ở trên (theo từng khu vực hoặc cộng dồn toàn quốc)
+    # ── Ghi đè bằng mô hình ML (MonthlyForecaster) ────────────────────────
+    # Tự huấn luyện trên dữ liệu mới nhất + dự báo. Nếu thất bại (thiếu data)
+    # thì giữ nguyên số heuristic ở trên làm fallback.
+    model_used = "multivariate_v1"
+    ml_accuracy: Dict[str, Any] | None = None
+    try:
+        from app.ai_engine.db_forecasting_service import DBForecastingService
+
+        ml_result = DBForecastingService(db).analyze(
+            icd_code=disease,
+            target_month=payload.target_month,
+            target_year=payload.target_year,
+            region=region,
+        )
+        predicted = int(ml_result["predicted_cases"])
+        fd = ml_result.get("formula_details", {}) or {}
+        # Ưu tiên baseline/hệ số từ mô hình để hiển thị nhất quán
+        baseline = float(fd.get("baseline", baseline) or baseline)
+        weather_factor = float(fd.get("weather_factor", weather_factor) or weather_factor)
+        trend_factor = float(fd.get("trend_factor", trend_factor) or trend_factor)
+        model_used = "monthly_forecaster_ml"
+        m = ml_result.get("model_metrics", {}) or {}
+        ml_accuracy = {
+            "mae": round(m.get("mae", 0), 2),
+            "rmse": round(m.get("rmse", 0), 2),
+            "mape": round(m.get("mape", 0), 2),
+            "r2": round(m.get("r2", 0), 3),
+            "n_samples": m.get("n_samples", 0),
+        }
+    except Exception as exc:
+        logger.warning("ML forecast unavailable, fallback heuristic: %s", exc)
+
     risk_level, increase_pct = _classify_risk(predicted, baseline)
 
     # 5. Build các series cho biểu đồ
@@ -491,7 +631,7 @@ async def analyze_forecast(
         predicted_cases=predicted,
         confidence_lower=int(predicted * 0.85),
         confidence_upper=int(predicted * 1.15),
-        model_used="multivariate_v1",
+        model_used=model_used,
         baseline_cases=int(baseline),
         weather_factor=weather_factor,
         trend_factor=trend_factor,
@@ -500,6 +640,10 @@ async def analyze_forecast(
         forecast_period_days=30,
         created_by=current_user.username,
     )
+    if ml_accuracy:
+        saved.model_accuracy_mae = ml_accuracy["mae"]
+        saved.model_accuracy_rmse = ml_accuracy["rmse"]
+        saved.model_accuracy_mape = ml_accuracy["mape"]
     db.add(saved)
     db.commit()
     db.refresh(saved)
@@ -556,7 +700,9 @@ async def analyze_forecast(
             "region": region or "Toàn thành phố",
             "target_month": payload.target_month,
             "target_year": payload.target_year,
+            "model_used": model_used,
         },
+        "accuracy": ml_accuracy,
         "explanation_bullets": explanation_bullets,
         "weather": {
             "forecast": forecast_w,

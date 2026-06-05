@@ -3,6 +3,8 @@ import {
   forecastAnalysisService,
   type AnalyzeRequest,
   type AnalyzeResponse,
+  type MLAnalyzeResponse,
+  type TrainResponse,
 } from '../services/forecastAnalysisService';
 import { useAuthStore } from '../store/authStore';
 
@@ -33,6 +35,18 @@ export function useRegionOptions() {
 export function useAnalyzeForecast() {
   return useMutation<AnalyzeResponse, Error, AnalyzeRequest>({
     mutationFn: (payload) => forecastAnalysisService.analyze(payload),
+  });
+}
+
+export function useTrainModels() {
+  return useMutation<TrainResponse, Error, string | null | undefined>({
+    mutationFn: (region) => forecastAnalysisService.trainModels(region),
+  });
+}
+
+export function useMLAnalyzeForecast() {
+  return useMutation<MLAnalyzeResponse, Error, AnalyzeRequest>({
+    mutationFn: (payload) => forecastAnalysisService.mlAnalyze(payload),
   });
 }
 

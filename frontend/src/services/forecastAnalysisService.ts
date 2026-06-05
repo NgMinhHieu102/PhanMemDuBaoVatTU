@@ -71,6 +71,57 @@ export interface ForecastHistoryItem {
   created_at: string | null;
 }
 
+export interface ModelAccuracy {
+  mae: number;
+  rmse: number;
+  mape: number;
+  r2: number;
+  n_samples: number;
+}
+
+export interface TrainModelResult {
+  status: string;
+  disease_label: string;
+  mae?: number;
+  rmse?: number;
+  mape?: number;
+  r2?: number;
+  n_samples?: number;
+  reason?: string;
+  weather_correlations?: Record<string, number>;
+}
+
+export interface TrainResponse {
+  status: string;
+  region: string;
+  trained_count: number;
+  models: Record<string, TrainModelResult>;
+  trained_at: string;
+}
+
+export interface MLAnalyzeResponse {
+  disease_type: string;
+  disease_label: string;
+  region: string;
+  target_month: number;
+  target_year: number;
+  predicted_cases: number;
+  confidence_lower: number;
+  confidence_upper: number;
+  risk_level: 'low' | 'medium' | 'high' | 'very_high';
+  risk_label: string;
+  increase_pct: number;
+  formula_details: {
+    baseline: number;
+    weather_factor: number;
+    trend_factor: number;
+    raw_prediction: number;
+    regression_adjusted: number;
+  };
+  forecast_weather: Record<string, number | null>;
+  accuracy: ModelAccuracy;
+}
+
 export const forecastAnalysisService = {
   async listDiseases(): Promise<DiseaseOption[]> {
     const res = await api.get<DiseaseOption[]>('/forecast/diseases');
@@ -84,6 +135,18 @@ export const forecastAnalysisService = {
 
   async analyze(payload: AnalyzeRequest): Promise<AnalyzeResponse> {
     const res = await api.post<AnalyzeResponse>('/forecast/analyze', payload);
+    return res.data;
+  },
+
+  async trainModels(region?: string | null): Promise<TrainResponse> {
+    const res = await api.post<TrainResponse>('/forecast/train', {
+      region: region ?? null,
+    });
+    return res.data;
+  },
+
+  async mlAnalyze(payload: AnalyzeRequest): Promise<MLAnalyzeResponse> {
+    const res = await api.post<MLAnalyzeResponse>('/forecast/ml-analyze', payload);
     return res.data;
   },
 

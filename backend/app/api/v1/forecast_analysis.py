@@ -96,8 +96,7 @@ def _query_cases(
 ) -> int:
     """Tổng ca bệnh trong tháng cho disease + region.
 
-    region có thể là tỉnh/thành (DiseaseCase.location) hoặc quận/huyện
-    (DiseaseCase.district_ward) — match theo OR để hỗ trợ cả 2 cấp.
+    region là tỉnh/thành (DiseaseCase.location).
     """
     q = db.query(func.coalesce(func.sum(DiseaseCase.case_count), 0)).filter(
         DiseaseCase.icd_code == disease,
@@ -107,10 +106,7 @@ def _query_cases(
     if region:
         from app.utils.province_alias import province_aliases
         aliases = province_aliases(region)
-        q = q.filter(
-            (DiseaseCase.location.in_(aliases))
-            | (DiseaseCase.district_ward == region)
-        )
+        q = q.filter(DiseaseCase.location.in_(aliases))
     return int(q.scalar() or 0)
 
 
@@ -134,10 +130,7 @@ def _query_weather(
     if region:
         from app.utils.province_alias import province_aliases
         aliases = province_aliases(region)
-        q = q.filter(
-            (EnvironmentalData.location.in_(aliases))
-            | (EnvironmentalData.district_ward == region)
-        )
+        q = q.filter(EnvironmentalData.location.in_(aliases))
     row = q.first()
 
     def f(v):

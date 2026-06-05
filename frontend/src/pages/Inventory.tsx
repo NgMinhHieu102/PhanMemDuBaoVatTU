@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Upload, FileDown, Plus, Loader2, X } from 'lucide-react';
+import { Download, Upload, FileDown, Plus, Loader2, X, RefreshCw } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
 import { useInventory } from '../hooks/useInventory';
 import api from '../services/api';
@@ -42,6 +42,16 @@ export default function Inventory() {
     truncated: boolean;
   } | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingItem, setEditingItem] = useState<InventoryRow | null>(null);
+  const [deletingItem, setDeletingItem] = useState<InventoryRow | null>(null);
+  const [syncingSafety, setSyncingSafety] = useState(false);
+  const [syncResult, setSyncResult] = useState<{
+    forecast_month: string;
+    buffer_rate: number;
+    updated: number;
+    skipped: number;
+    message: string;
+  } | null>(null);
 
   const { data: inventory = [], isLoading, refetch } = useInventory({ limit: 2000 });
 
@@ -183,6 +193,58 @@ export default function Inventory() {
     }
   };
 
+  // ── Handler cho Edit ─────────────────────────────────────────
+  const handleEdit = (row: InventoryRow) => {
+    setEditingItem(row);
+  };
+
+  // ── Handler cho Delete ─────────────────────────────────────────
+  const handleDelete = (row: InventoryRow) => {
+    setDeletingItem(row);
+  };
+
+  const confirmDelete = async () => {
+    if (!deletingItem) return;
+    try {
+      await api.delete(`/inventory/${deletingItem.id}`);
+      refetch();
+      setDeletingItem(null);
+    } catch (err: any) {
+      alert(
+        'Lỗi xoá vật tư: ' +
+          (err?.response?.data?.detail || err.message || 'không xác định'),
+      );
+    }
+  };
+
+  // ── Handler cho Sync Safety Stock ─────────────────────────────────────────
+  const handleSyncSafetyStock = async () => {
+    if (syncingSafety) return;
+    const confirm = window.confirm(
+      'Cập nhật ngưỡng an toàn cho tất cả vật tư từ kết quả dự báo gần nhất?\n\n' +
+      'Hành động này sẽ ghi đè các giá trị ngưỡng AT hiện tại.'
+    );
+    if (!confirm) return;
+
+    try {
+      setSyncingSafety(true);
+      const res = await api.post('/inventory/sync-safety-stock', null, {
+        params: {
+          buffer_rate: 15, // Có thể cho user nhập
+        },
+      });
+      setSyncResult(res.data);
+      refetch();
+    } catch (err: any) {
+      alert(
+        'Lỗi cập nhật ngưỡng AT: ' +
+          (err?.response?.data?.detail || err.message || 'không xác định'),
+      );
+    } finally {
+      setSyncingSafety(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Page header */}
@@ -207,6 +269,19 @@ export default function Inventory() {
               if (e.target) e.target.value = '';
             }}
           />
+          <ActionButton
+            variant="outline"
+            icon={
+              syncingSafety ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )
+            }
+            onClick={handleSyncSafetyStock}
+          >
+            {syncingSafety ? 'Đang cập nhật...' : 'Cập nhật ngưỡng AT từ dự báo'}
+          </ActionButton>
           <ActionButton
             variant="outline"
             icon={
@@ -267,6 +342,8 @@ export default function Inventory() {
           page={page}
           pageSize={PAGE_SIZE}
           onPageChange={setPage}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
         />
       </div>
 
@@ -290,6 +367,27 @@ export default function Inventory() {
             setShowAddForm(false);
             refetch();
           }}
+        />
+      )}
+
+      {/* Edit supply form */}
+      {editingItem && (
+        <EditSupplyDialog
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onSaved={() => {
+            setEditingItem(null);
+            refetch();
+          }}
+        />
+      )}
+
+      {/* Delete confirmation dialog */}
+      {deletingItem && (
+        <ConfirmDeleteDialog
+          item={deletingItem}
+          onClose={() => setDeletingItem(null)}
+          onConfirm={confirmDelete}
         />
       )}
 
@@ -359,6 +457,62 @@ export default function Inventory() {
             <div className="flex justify-end mt-4">
               <button
                 onClick={() => setImportResult(null)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sync safety stock result modal */}
+      {syncResult && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Cập nhật ngưỡng AT</h3>
+              <button
+                onClick={() => setSyncResult(null)}
+                className="p-1 rounded hover:bg-neutral-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-3 mb-4">
+              <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
+                <div className="text-xs text-blue-600 mb-1">Tháng dự báo</div>
+                <div className="font-semibold text-blue-900">
+                  {new Date(syncResult.forecast_month).toLocaleDateString('vi-VN', {
+                    month: 'long',
+                    year: 'numeric',
+                  })}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+                  <p className="text-xs text-emerald-600 mb-1">Đã cập nhật</p>
+                  <p className="text-2xl font-bold text-emerald-700 tabular-nums">
+                    {syncResult.updated}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-amber-100 bg-amber-50 p-3">
+                  <p className="text-xs text-amber-600 mb-1">Bỏ qua</p>
+                  <p className="text-2xl font-bold text-amber-700 tabular-nums">
+                    {syncResult.skipped}
+                  </p>
+                </div>
+              </div>
+              <div className="text-sm text-neutral-600 bg-neutral-50 border border-neutral-100 rounded-lg px-3 py-2">
+                <strong>% Dự phòng:</strong> {syncResult.buffer_rate}%
+              </div>
+            </div>
+            <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2 mb-4">
+              ✓ {syncResult.message}
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setSyncResult(null)}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
               >
                 Đóng
@@ -632,5 +786,185 @@ function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+
+// ── Edit Supply Dialog ──────────────────────────────────────────
+
+function EditSupplyDialog({
+  item,
+  onClose,
+  onSaved,
+}: {
+  item: InventoryRow;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [vals, setVals] = useState({
+    current_stock: item.currentStock,
+    safety_stock: item.safetyStock,
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (vals.current_stock < 0 || vals.safety_stock < 0) {
+      setError('Tồn kho và ngưỡng AT phải >= 0');
+      return;
+    }
+    try {
+      setSubmitting(true);
+      await api.put(`/inventory/${item.id}`, vals);
+      onSaved();
+    } catch (err: any) {
+      setError(
+        err?.response?.data?.detail || err.message || 'Có lỗi xảy ra',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-neutral-100">
+          <h3 className="text-base font-semibold text-neutral-900">Sửa vật tư</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
+          <div className="bg-neutral-50 rounded-lg p-3 mb-3">
+            <div className="text-xs text-neutral-500 mb-1">Vật tư</div>
+            <div className="font-semibold text-neutral-900">{item.name}</div>
+            <div className="text-sm text-neutral-600 mt-0.5">
+              Mã: {item.code} • Loại: {item.category}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Tồn kho hiện tại">
+              <input
+                type="number"
+                min={0}
+                value={vals.current_stock}
+                onChange={(e) =>
+                  setVals({ ...vals, current_stock: Math.max(0, Number(e.target.value)) })
+                }
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Ngưỡng an toàn">
+              <input
+                type="number"
+                min={0}
+                value={vals.safety_stock}
+                onChange={(e) =>
+                  setVals({ ...vals, safety_stock: Math.max(0, Number(e.target.value)) })
+                }
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          {error && (
+            <div className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-lg hover:bg-neutral-50"
+            >
+              Huỷ
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+            >
+              {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              Cập nhật
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Confirm Delete Dialog ──────────────────────────────────────────
+
+function ConfirmDeleteDialog({
+  item,
+  onClose,
+  onConfirm,
+}: {
+  item: InventoryRow;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    await onConfirm();
+    setSubmitting(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-neutral-100">
+          <h3 className="text-base font-semibold text-neutral-900">Xác nhận xoá</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="px-5 py-4">
+          <p className="text-sm text-neutral-600 mb-3">
+            Bạn có chắc chắn muốn xoá vật tư này không?
+          </p>
+          <div className="bg-red-50 rounded-lg p-3 mb-4">
+            <div className="font-semibold text-neutral-900">{item.name}</div>
+            <div className="text-sm text-neutral-600 mt-0.5">
+              Mã: {item.code} • Tồn kho: {item.currentStock} {item.unit}
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-4 py-2 text-sm font-medium text-neutral-700 bg-white border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-60"
+            >
+              Huỷ
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={submitting}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-60"
+            >
+              {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              Xoá
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

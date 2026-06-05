@@ -68,20 +68,14 @@ export default function Weather() {
   const [syncingOpenMeteo, setSyncingOpenMeteo] = useState(false);
 
   // Filters
-  const [filterMonth, setFilterMonth] = useState<string>(() =>
-    new Date().toISOString().slice(0, 7),
+  const [filterYear, setFilterYear] = useState<string>(() =>
+    new Date().getFullYear().toString(),
   );
+  const [filterMonth, setFilterMonth] = useState<string>('all');
   const [filterProvince, setFilterProvince] = useState<string>('all');
-  const [filterDistrict, setFilterDistrict] = useState<string>('all');
   const [provinces, setProvinces] = useState<string[]>([]);
-  const [districts, setDistricts] = useState<string[]>([]);
   // Map cascade tỉnh → list quận đã có data trong DB
   const [provinceDistricts, setProvinceDistricts] = useState<Record<string, string[]>>({});
-
-  // Reset district khi đổi tỉnh
-  useEffect(() => {
-    setFilterDistrict('all');
-  }, [filterProvince]);
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -123,15 +117,17 @@ export default function Weather() {
   useEffect(() => {
     loadTrend();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterMonth, filterProvince, filterDistrict]);
+  }, [filterYear, filterMonth, filterProvince]);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/environmental/', { params: { limit: 1000 } });
+      const res = await api.get('/environmental/', { params: { limit: 100 } });
       setItems(res.data || []);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error('❌ Environmental API Error:', err);
+      console.error('Response:', err.response?.data);
+      console.error('Status:', err.response?.status);
     } finally {
       setLoading(false);
     }
@@ -201,12 +197,17 @@ export default function Weather() {
 
   const loadTrend = async () => {
     try {
-      const month = filterMonth ? Number(filterMonth.split('-')[1]) : new Date().getMonth() + 1;
+      // Use selected month for trend, or default to current month if "all" is selected
+      const month = filterMonth !== 'all' 
+        ? Number(filterMonth) 
+        : new Date().getMonth() + 1;
+      
       const res = await api.get('/environmental/trend', {
         params: {
           target_month: month,
           province: filterProvince !== 'all' ? filterProvince : undefined,
-          district: filterDistrict !== 'all' ? filterDistrict : undefined,
+          // Don't filter by district for trend - use province-level data
+          // district: filterDistrict !== 'all' ? filterDistrict : undefined,
         },
       });
       setTrend(res.data || []);
@@ -215,18 +216,33 @@ export default function Weather() {
     }
   };
 
-  // Filter and paginate
+  // Filter and paginate - show all months of selected year, optionally filter by specific month
   const filtered = useMemo(() => {
+    console.log('🔍 Weather Filter Debug:', {
+      totalItems: items.length,
+      filterYear,
+      filterMonth, 
+      filterProvince,
+      sampleItem: items[0]
+    });
+    
     return items.filter((it) => {
-      if (filterMonth) {
-        const m = it.recorded_at?.slice(0, 7);
-        if (m !== filterMonth) return false;
+      // Filter by year
+      if (filterYear) {
+        const year = it.recorded_at?.slice(0, 4);
+        if (year !== filterYear) return false;
       }
+      // Filter by specific month if selected (not 'all')
+      if (filterMonth !== 'all') {
+        const month = it.recorded_at?.slice(5, 7);
+        if (month !== filterMonth) return false;
+      }
+      // Filter by province
       if (filterProvince !== 'all' && normalizeProvinceName(it.location) !== normalizeProvinceName(filterProvince)) return false;
-      if (filterDistrict !== 'all' && it.district_ward !== filterDistrict) return false;
+      
       return true;
     });
-  }, [items, filterMonth, filterProvince, filterDistrict]);
+  }, [items, filterYear, filterMonth, filterProvince]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -280,7 +296,7 @@ export default function Weather() {
     setSyncingOpenMeteo(true);
     try {
       const res = await api.post('/environmental/sync-openmeteo', null, {
-        params: { province, months_back: 12, forecast_days: 16 },
+        params: { province, months_back: 66, forecast_days: 16 },
       });
       const d = res.data ?? {};
       alert(
@@ -393,9 +409,10 @@ export default function Weather() {
   };
 
   const formatMonthLabel = () => {
-    if (!filterMonth) return 'tất cả';
-    const [y, m] = filterMonth.split('-');
-    return `tháng ${Number(m)} năm ${y}`;
+    const monthName = filterMonth !== 'all' 
+      ? `tháng ${Number(filterMonth)}`
+      : 'các tháng trong năm';
+    return `${monthName} (qua các năm)`;
   };
 
   const aqiColor = (v?: number | null) => {
@@ -473,17 +490,48 @@ export default function Weather() {
 
       {/* Filters */}
       <div className="bg-white rounded-2xl border border-neutral-200 p-5">
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+        <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
+          <div>
+            <label className="block text-sm font-medium text-neutral-600 mb-1.5">Năm</label>
+            <div className="relative">
+              <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+              <select
+                value={filterYear}
+                onChange={(e) => setFilterYear(e.target.value)}
+                className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white"
+              >
+                {Array.from({ length: 10 }, (_, i) => {
+                  const year = new Date().getFullYear() - i;
+                  return (
+                    <option key={year} value={year.toString()}>
+                      {year}
+                    </option>
+                  );
+                })}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
+            </div>
+          </div>
           <div>
             <label className="block text-sm font-medium text-neutral-600 mb-1.5">Tháng</label>
             <div className="relative">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
-              <input
-                type="month"
+              <select
                 value={filterMonth}
                 onChange={(e) => setFilterMonth(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 border border-neutral-200 rounded-lg text-sm"
-              />
+                className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white"
+              >
+                <option value="all">Tất cả các tháng</option>
+                {Array.from({ length: 12 }, (_, i) => {
+                  const month = String(i + 1).padStart(2, '0');
+                  return (
+                    <option key={month} value={month}>
+                      Tháng {i + 1}
+                    </option>
+                  );
+                })}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
             </div>
           </div>
           <div>
@@ -507,31 +555,6 @@ export default function Weather() {
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
             </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-600 mb-1.5">Phường/Xã</label>
-            <div className="relative">
-              <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
-              <select
-                value={filterDistrict}
-                onChange={(e) => setFilterDistrict(e.target.value)}
-                disabled={filterProvince === 'all'}
-                className="w-full pl-9 pr-9 py-2 border border-neutral-200 rounded-lg text-sm appearance-none bg-white disabled:bg-neutral-50 disabled:text-neutral-400 disabled:cursor-not-allowed"
-              >
-                <option value="all">
-                  {filterProvince === 'all'
-                    ? 'Chọn Tỉnh/Thành trước'
-                    : 'Tất cả Phường/Xã'}
-                </option>
-                {filterProvince !== 'all' &&
-                  getDistrictsForRegion(filterProvince, provinceDistricts).map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
-            </div>
-          </div>
           <button
             onClick={() => {
               loadData();
@@ -547,7 +570,7 @@ export default function Weather() {
       {/* Trend chart */}
       <div className="bg-white rounded-2xl border border-neutral-200 p-5">
         <h3 className="font-semibold text-neutral-900 mb-3">
-          Xu hướng thay đổi các yếu tố thời tiết ({formatMonthLabel()} qua các năm)
+          Xu hướng thay đổi các yếu tố thời tiết ({formatMonthLabel()})
         </h3>
         {trend.length === 0 ? (
           <div className="h-72 flex items-center justify-center text-sm text-neutral-400">
@@ -675,7 +698,7 @@ export default function Weather() {
                         {fmt(row.rainfall, 1)}
                       </td>
                       <td className={`px-6 py-3 text-right ${aqiColor(row.air_quality_index)}`}>
-                        {row.air_quality_index ?? '—'}
+                        {fmt(row.air_quality_index, 0)}
                       </td>
                       <td className={`px-6 py-3 text-right ${pm25Color(row.pm25)}`}>
                         {fmt(row.pm25, 1)}

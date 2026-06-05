@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react';
+import { Loader2, Edit2, Trash2 } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import InventoryStatusBadge, {
   classifyStatus,
@@ -22,6 +22,8 @@ interface Props {
   page: number;
   pageSize: number;
   onPageChange: (page: number) => void;
+  onEdit?: (row: InventoryRow) => void;
+  onDelete?: (row: InventoryRow) => void;
 }
 
 export default function InventoryTable({
@@ -31,6 +33,8 @@ export default function InventoryTable({
   page,
   pageSize,
   onPageChange,
+  onEdit,
+  onDelete,
 }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -49,12 +53,13 @@ export default function InventoryTable({
               <th className="text-right px-5 py-3 font-semibold">Tồn kho</th>
               <th className="text-right px-5 py-3 font-semibold">Ngưỡng AT</th>
               <th className="text-left px-5 py-3 font-semibold">Trạng thái</th>
+              <th className="text-center px-5 py-3 font-semibold">Thao tác</th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={7} className="py-10">
+                <td colSpan={8} className="py-10">
                   <div className="flex items-center justify-center gap-2 text-neutral-500 text-sm">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Đang tải dữ liệu vật tư...
@@ -63,7 +68,7 @@ export default function InventoryTable({
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-10 text-center text-sm text-neutral-400">
+                <td colSpan={8} className="py-10 text-center text-sm text-neutral-400">
                   Không tìm thấy vật tư nào
                 </td>
               </tr>
@@ -96,6 +101,28 @@ export default function InventoryTable({
                     </td>
                     <td className="px-5 py-3.5">
                       <InventoryStatusBadge status={status} />
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center justify-center gap-2">
+                        {onEdit && (
+                          <button
+                            onClick={() => onEdit(r)}
+                            className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600 transition-colors"
+                            title="Sửa"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {onDelete && (
+                          <button
+                            onClick={() => onDelete(r)}
+                            className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 transition-colors"
+                            title="Xoá"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );

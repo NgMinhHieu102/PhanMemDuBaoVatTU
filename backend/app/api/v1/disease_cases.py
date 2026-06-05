@@ -29,17 +29,16 @@ def get_client_ip(request: Request) -> str:
 @router.get("/", response_model=List[DiseaseCaseResponse])
 def list_disease_cases(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1),  # Bỏ giới hạn tối đa
     disease_type: Optional[str] = Query(None, description="Filter by disease type"),
     location: Optional[str] = Query(None, description="Filter by location (Tỉnh/Thành)"),
-    district_ward: Optional[str] = Query(None, description="Filter by district/ward"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ) -> Any:
     """
     List disease case records.
 
-    Supports filtering by disease type, location (Tỉnh/Thành) và district_ward (Quận/Huyện).
+    Supports filtering by disease type and location (Tỉnh/Thành).
     """
     from app.models.disease_case import DiseaseCase
 
@@ -48,8 +47,6 @@ def list_disease_cases(
         q = q.filter(DiseaseCase.disease_type == disease_type)
     if location:
         q = q.filter(DiseaseCase.location == location)
-    if district_ward:
-        q = q.filter(DiseaseCase.district_ward == district_ward)
     return (
         q.order_by(DiseaseCase.recorded_at.desc())
         .offset(skip)
@@ -78,8 +75,7 @@ def create_disease_case(
     service = DiseaseCaseService(db)
     client_ip = get_client_ip(request)
 
-    # Dedupe check: cùng (year, month, disease_type, location, district_ward) → 409
-    new_district = (data.district_ward or "").strip() or None
+    # Dedupe check: cùng (year, month, disease_type, location) → 409
     existing = (
         db.query(DiseaseCase)
         .filter(
@@ -87,8 +83,6 @@ def create_disease_case(
             extract("month", DiseaseCase.recorded_at) == data.recorded_at.month,
             DiseaseCase.disease_type == data.disease_type,
             DiseaseCase.location == data.location,
-            DiseaseCase.district_ward.is_(None) if new_district is None
-            else DiseaseCase.district_ward == new_district,
         )
         .first()
     )
@@ -108,10 +102,9 @@ def create_disease_case(
             created_by_user_id=current_user.id,
             ip_address=client_ip
         )
-        # Gắn note + created_by username + district_ward (vì service legacy không xử lý)
+        # Gắn note + created_by username
         new_case.note = data.note
         new_case.created_by = current_user.username
-        new_case.district_ward = new_district
         db.commit()
         db.refresh(new_case)
         return new_case
@@ -234,7 +227,8 @@ async def import_disease_cases_csv(
 
     try:
         raw = await file.read()
-        text = raw.decode("utf-8", errors="replace")
+        # Decode và loại bỏ BOM (Byte Order Mark) nếu có
+        text = raw.decode("utf-8-sig", errors="replace")
         reader = list(csv.DictReader(io.StringIO(text)))
     except Exception as exc:
         raise HTTPException(
@@ -301,11 +295,18 @@ async def import_disease_cases_csv(
                 ", ".join(sorted(new_regions_to_register)),
             )
 
-    if {"month", "disease_name", "region", "cases"}.issubset(headers):
+    # Check if this is simple template format (supports both disease_name and disease_code)
+    has_simple_format = (
+        "month" in headers and 
+        "region" in headers and 
+        "cases" in headers and 
+        ("disease_name" in headers or "disease_code" in headers)
+    )
+    
+    if has_simple_format:
         # Simple template format → 1 row = 1 record
-        # Cột district_ward (Quận/Huyện/Phường/Xã) là tuỳ chọn
         # Cột supply_name / supply_quantity / supply_unit / supply_category là tuỳ chọn:
-        #   khi xuất hiện, các dòng cùng (month+disease+region+district) được gộp thành 1 ca
+        #   khi xuất hiện, các dòng cùng (month+disease+region) được gộp thành 1 ca
         #   bệnh kèm nhiều dòng chi tiết thuốc đã dùng.
         from app.models.medical_supply import MedicalSupply
         from app.models.case_supply_usage import CaseSupplyUsage
@@ -316,14 +317,17 @@ async def import_disease_cases_csv(
             or "drug_code" in headers
         )
 
-        # Bước 1: gom theo key (month, disease_key, region, district_ward) để gộp các dòng
+        # Bước 1: gom theo key (month, disease_key, region) để gộp các dòng
         # supply chi tiết về cùng 1 ca bệnh.
         grouped: dict[tuple, dict] = {}
         for idx, row in enumerate(reader, start=2):
             month_str = (row.get("month") or "").strip()
-            disease = (row.get("disease_name") or "").strip()
+            # Ưu tiên disease_code, fallback về disease_name
+            disease_code = (row.get("disease_code") or "").strip().upper()  # Chuẩn hóa thành chữ hoa
+            disease_name = (row.get("disease_name") or "").strip()
+            disease = disease_code if disease_code else disease_name
+            
             region = (row.get("region") or "").strip()
-            district = (row.get("district_ward") or "").strip() or None
             cases_raw = (row.get("cases") or "").strip()
             note = (row.get("note") or "").strip() or None
             supply_name = (row.get("supply_name") or "").strip() if has_supply_col else ""
@@ -337,8 +341,8 @@ async def import_disease_cases_csv(
                 skipped += 1
                 errors.append({
                     "row": idx,
-                    "reason": "Thiếu cột bắt buộc (month / disease_name / region / cases)",
-                    "data": {"month": month_str, "disease_name": disease, "region": region, "cases": cases_raw},
+                    "reason": "Thiếu cột bắt buộc (month / disease_code hoặc disease_name / region / cases)",
+                    "data": {"month": month_str, "disease": disease, "region": region, "cases": cases_raw},
                 })
                 continue
 
@@ -369,17 +373,23 @@ async def import_disease_cases_csv(
                 errors.append({"row": idx, "reason": f"Số ca phải >= 0, nhận được {cases_int}"})
                 continue
 
-            disease_key = NHOM_BENH_MAPPING.get(disease, disease)
-            # Nếu disease_key không phải mã ICD hợp lệ thì bỏ qua
+            # Nếu disease đã là mã ICD hợp lệ (J01, J02, J06, J20) thì dùng trực tiếp
+            # Nếu không thì tra mapping từ tên tiếng Việt
+            if disease in ICD_TO_NAME:
+                disease_key = disease
+            else:
+                disease_key = NHOM_BENH_MAPPING.get(disease, disease)
+            
+            # Validate mã ICD
             if disease_key not in ICD_TO_NAME:
                 skipped += 1
                 errors.append({
                     "row": idx,
-                    "reason": f"Bệnh không hợp lệ: '{disease}'. Chỉ hỗ trợ 4 bệnh: {', '.join(ICD_TO_NAME.values())}",
+                    "reason": f"Bệnh không hợp lệ: '{disease}'. Chỉ hỗ trợ 4 bệnh: {', '.join(ICD_TO_NAME.values())} hoặc mã ICD: {', '.join(ICD_TO_NAME.keys())}",
                 })
                 continue
             disease_name_std = ICD_TO_NAME[disease_key]
-            key = (recorded_at, disease_key, region, district)
+            key = (recorded_at, disease_key, region)
 
             entry = grouped.get(key)
             if entry is None:
@@ -388,7 +398,6 @@ async def import_disease_cases_csv(
                     "disease_key": disease_key,
                     "disease_name": disease_name_std,
                     "region": region,
-                    "district": district,
                     "case_count": cases_int,
                     "note": note,
                     "supplies": [],  # list of dicts
@@ -490,29 +499,23 @@ async def import_disease_cases_csv(
             disease_key = entry["disease_key"]
             disease_name_std = entry["disease_name"]
             region = entry["region"]
-            district = entry["district"]
             cases_int = entry["case_count"]
             note = entry["note"]
 
-            existing_query = (
+            existing = (
                 db.query(DiseaseCase)
                 .filter(
                     DiseaseCase.recorded_at == recorded_at,
                     DiseaseCase.icd_code == disease_key,
                     DiseaseCase.location == region,
                 )
+                .first()
             )
-            if district is None:
-                existing_query = existing_query.filter(DiseaseCase.district_ward.is_(None))
-            else:
-                existing_query = existing_query.filter(DiseaseCase.district_ward == district)
-            existing = existing_query.first()
             if existing:
                 existing.case_count = cases_int
                 existing.disease_name = disease_name_std
                 existing.disease_type = "respiratory"
                 existing.data_source = file.filename
-                existing.district_ward = district
                 if note:
                     existing.note = note
                 case_obj = existing
@@ -525,7 +528,6 @@ async def import_disease_cases_csv(
                     disease_type="respiratory",
                     case_count=cases_int,
                     location=region,
-                    district_ward=district,
                     data_source=file.filename,
                     note=note,
                     created_by=current_user.username,
@@ -535,8 +537,6 @@ async def import_disease_cases_csv(
                 imported += 1
 
             new_regions_to_register.add(region)
-            if district:
-                new_regions_to_register.add(district)
 
             # Persist supply usage details (nếu CSV có)
             if entry["supplies"]:
@@ -699,18 +699,12 @@ def update_disease_case(
             detail=f"Disease case {case_id} not found",
         )
 
-    # Nếu đổi (recorded_at + icd_code + location + district_ward) → check trùng với bản ghi khác
+    # Nếu đổi (recorded_at + icd_code + location) → check trùng với bản ghi khác
     new_recorded_at = data.recorded_at or case.recorded_at
     new_icd = data.icd_code or case.icd_code
     new_location = data.location or case.location
-    # district_ward dùng exclude_unset để phân biệt None (xoá) với "không thay đổi"
-    update_data = data.model_dump(exclude_unset=True)
-    if "district_ward" in update_data:
-        new_district = (update_data["district_ward"] or None) if update_data["district_ward"] else None
-    else:
-        new_district = case.district_ward
 
-    duplicate_query = (
+    duplicate = (
         db.query(DiseaseCase)
         .filter(
             DiseaseCase.id != case_id,
@@ -719,12 +713,8 @@ def update_disease_case(
             DiseaseCase.icd_code == new_icd,
             DiseaseCase.location == new_location,
         )
+        .first()
     )
-    if new_district is None:
-        duplicate_query = duplicate_query.filter(DiseaseCase.district_ward.is_(None))
-    else:
-        duplicate_query = duplicate_query.filter(DiseaseCase.district_ward == new_district)
-    duplicate = duplicate_query.first()
     if duplicate:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -736,7 +726,6 @@ def update_disease_case(
 
     update_dict = data.model_dump(exclude_unset=True)
     for k, v in update_dict.items():
-        # Cho phép gán district_ward = None (xoá quận/huyện)
         setattr(case, k, v)
 
     try:
@@ -954,8 +943,6 @@ def get_case_supply_usage(
             extract("month", DiseaseCase.recorded_at) == prev_month,
         )
     )
-    if case.district_ward:
-        prev_q = prev_q.filter(DiseaseCase.district_ward == case.district_ward)
     prev_total = int(prev_q.scalar() or 0)
     prev_supply_types = len(supplies)
     delta_cases = (
@@ -975,7 +962,6 @@ def get_case_supply_usage(
             # giữ disease_type cho frontend cũ
             "disease_type": case.icd_code,
             "location": case.location,
-            "district_ward": case.district_ward,
             "case_count": case.case_count,
             "note": case.note,
         },
@@ -997,12 +983,12 @@ async def download_template():
     from fastapi.responses import StreamingResponse
 
     sample = (
-        "month,disease_name,region,district_ward,cases,supply_name,supply_quantity,supply_unit,supply_category,note\n"
-        "10/2024,Viêm phế quản cấp,TP. Hồ Chí Minh,Quận 1,145,Paracetamol,1450,Viên,Thuốc hạ sốt giảm đau,\n"
-        "10/2024,Viêm phế quản cấp,TP. Hồ Chí Minh,Quận 1,145,N-acetylcysteine,1015,Gói,Thuốc long đờm,\n"
-        "10/2024,Nhiễm trùng đường hô hấp trên cấp,TP. Hồ Chí Minh,Quận 1,89,Paracetamol,890,Viên,Thuốc hạ sốt giảm đau,\n"
-        "09/2024,Viêm họng cấp,Hà Nội,Quận Hoàn Kiếm,67,Fexofenadin,335,Viên,Kháng histamin,\n"
-        "09/2024,Viêm xoang cấp,Hà Nội,Quận Hoàn Kiếm,42,,,,,Có thể bỏ trống supply để chỉ ghi số ca\n"
+        "month,disease_name,region,cases,supply_name,supply_quantity,supply_unit,supply_category,note\n"
+        "10/2024,Viêm phế quản cấp,TP. Hồ Chí Minh,145,Paracetamol,1450,Viên,Thuốc hạ sốt giảm đau,\n"
+        "10/2024,Viêm phế quản cấp,TP. Hồ Chí Minh,145,N-acetylcysteine,1015,Gói,Thuốc long đờm,\n"
+        "10/2024,Nhiễm trùng đường hô hấp trên cấp,TP. Hồ Chí Minh,89,Paracetamol,890,Viên,Thuốc hạ sốt giảm đau,\n"
+        "09/2024,Viêm họng cấp,Hà Nội,67,Fexofenadin,335,Viên,Kháng histamin,\n"
+        "09/2024,Viêm xoang cấp,Hà Nội,42,,,,,Có thể bỏ trống supply để chỉ ghi số ca\n"
     )
     return StreamingResponse(
         iter([sample]),
@@ -1016,7 +1002,7 @@ async def distinct_values(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Lấy danh sách icd_code + location + district_ward duy nhất để dropdown filter."""
+    """Lấy danh sách icd_code + location duy nhất để dropdown filter."""
     from app.models.disease_case import DiseaseCase
 
     # Lấy distinct (icd_code, disease_name) để hiển thị nhãn rõ ràng
@@ -1032,19 +1018,6 @@ async def distinct_values(
         .order_by(DiseaseCase.location)
         .all()
     )
-    # Trả về list các cặp (location, district_ward) để frontend cascade
-    pairs = (
-        db.query(DiseaseCase.location, DiseaseCase.district_ward)
-        .filter(DiseaseCase.district_ward.isnot(None))
-        .distinct()
-        .all()
-    )
-    region_to_districts: dict[str, list[str]] = {}
-    for loc, dist in pairs:
-        if loc and dist:
-            region_to_districts.setdefault(loc, []).append(dist)
-    for v in region_to_districts.values():
-        v.sort()
 
     # icd_codes: list mã ICD; diseases: list {icd_code, name} cho UI hiển thị nhãn
     icd_codes = [d[0] for d in diseases_rows if d[0]]
@@ -1060,5 +1033,4 @@ async def distinct_values(
         # Tương thích frontend cũ — disease_types là list ICD code
         "disease_types": icd_codes,
         "regions": [r[0] for r in regions if r[0]],
-        "region_districts": region_to_districts,
     }

@@ -28,6 +28,10 @@ export default function SupplyNormSection() {
   );
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  
+  // Phân trang
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
 
   const { data, isLoading, refetch } = useQuery<NormMatrix>({
     queryKey: ['admin', 'supply-norms', selectedDisease],
@@ -48,6 +52,7 @@ export default function SupplyNormSection() {
       setDraft(initial);
       setSuccess(null);
       setError(null);
+      setCurrentPage(1); // Reset về trang 1 khi đổi bệnh
     }
   }, [data]);
 
@@ -130,6 +135,13 @@ export default function SupplyNormSection() {
     bulkMutation.mutate(norms);
   };
 
+  // Phân trang
+  const supplies = data?.supplies || [];
+  const totalPages = Math.ceil(supplies.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedSupplies = supplies.slice(startIndex, endIndex);
+
   return (
     <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden">
       <div className="px-5 py-4 border-b border-neutral-100 flex items-start justify-between gap-4 flex-wrap">
@@ -207,7 +219,7 @@ export default function SupplyNormSection() {
                 </td>
               </tr>
             )}
-            {data?.supplies?.map((s) => {
+            {paginatedSupplies.map((s) => {
               const d = draft[s.supply_id] ?? {
                 mild: s.mild,
                 moderate: s.moderate,
@@ -286,6 +298,64 @@ export default function SupplyNormSection() {
           </tbody>
         </table>
       </div>
+
+      {/* Footer phân trang */}
+      {supplies.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-t border-neutral-100 text-sm text-neutral-500">
+          <span className="text-xs">
+            Hiển thị {startIndex + 1}-{Math.min(endIndex, supplies.length)} trong số {supplies.length} thuốc/vật tư
+          </span>
+          
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1.5 text-xs border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Trước
+              </button>
+              
+              <div className="flex items-center gap-1">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum;
+                  if (totalPages <= 5) {
+                    pageNum = i + 1;
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 1;
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  } else {
+                    pageNum = currentPage - 2 + i;
+                  }
+                  
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setCurrentPage(pageNum)}
+                      className={`w-8 h-8 text-xs rounded-lg ${
+                        currentPage === pageNum
+                          ? 'bg-blue-600 text-white font-medium'
+                          : 'border border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+              
+              <button
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1.5 text-xs border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Sau
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

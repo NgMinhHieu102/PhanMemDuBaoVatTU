@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { ShoppingCart, AlertTriangle, CheckCircle2, TrendingUp, Calculator } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ShoppingCart, AlertTriangle, CheckCircle2, TrendingUp, Calculator, Save, Loader2 } from 'lucide-react';
 
 import { useUIStore } from '../store/uiStore';
 import {
@@ -35,6 +35,8 @@ export default function Alerts() {
 
   const monthDate = `${forecastMonth}-01`;
 
+  const queryClient = useQueryClient();
+
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['supply-recommendations', forecastMonth, bufferRate],
     queryFn: () =>
@@ -44,6 +46,23 @@ export default function Alerts() {
       }),
     staleTime: 60_000,
     retry: false,
+  });
+
+  // Mutation để lưu kết quả
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      supplyRecommendationService.calculateForMonth({
+        forecast_month: monthDate,
+        buffer_rate: bufferRate,
+        save: true, // Lưu vào DB
+      }),
+    onSuccess: (result) => {
+      alert(`Đã lưu ${result.diseases.length} bệnh với tổng cộng ${result.total_supplies} vật tư vào database.`);
+      queryClient.invalidateQueries({ queryKey: ['supply-recommendations'] });
+    },
+    onError: (err: any) => {
+      alert('Lỗi khi lưu: ' + (err?.response?.data?.detail || err.message));
+    },
   });
 
   // Filter theo bệnh
@@ -105,6 +124,20 @@ export default function Alerts() {
             Đề xuất nhập = max(0, nhu cầu + ngưỡng AT - tồn kho)
           </p>
         </div>
+        {data && (
+          <button
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-60 shadow-sm"
+          >
+            {saveMutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            {saveMutation.isPending ? 'Đang lưu...' : 'Lưu kết quả vào DB'}
+          </button>
+        )}
       </div>
 
       {/* Filter bar */}

@@ -28,7 +28,6 @@ class DiseaseCase(Base):
     
     # Địa điểm
     location = Column(String(100), nullable=False, index=True)  # Tỉnh/Thành
-    district_ward = Column(String(100), index=True)  # Quận/Huyện hoặc Phường/Xã
     
     # Metadata
     data_source = Column(String(100))

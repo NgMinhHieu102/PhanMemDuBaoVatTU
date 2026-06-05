@@ -175,7 +175,11 @@ class OpenMeteoClient:
         forecast_days: int = 5,
         past_days: int = 0,
     ) -> List[Dict[str, Any]]:
-        """AQI + PM2.5 hằng ngày (aggregated từ hourly)."""
+        """AQI + PM2.5 hằng ngày (aggregated từ hourly).
+        
+        Note: forecast_days và past_days bị giới hạn bởi API.
+        Để lấy historical data dài hơn, dùng get_air_quality_historical().
+        """
         params = {
             "latitude": latitude,
             "longitude": longitude,
@@ -185,6 +189,33 @@ class OpenMeteoClient:
             "past_days": max(past_days, 0),
         }
         data = self._get(URL_AIR_QUALITY, params)
+        return self._aggregate_hourly_to_daily(data)
+
+    def get_air_quality_historical(
+        self,
+        latitude: float,
+        longitude: float,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """AQI + PM2.5 historical data cho date range cụ thể."""
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "hourly": "us_aqi,pm2_5",
+            "timezone": "Asia/Bangkok",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+        data = self._get(URL_AIR_QUALITY, params)
+        return self._aggregate_hourly_to_daily(data)
+
+    def _aggregate_hourly_to_daily(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """AQI + PM2.5 hằng ngày (aggregated từ hourly).
+        
+        Note: forecast_days và past_days bị giới hạn bởi API.
+        Để lấy historical data dài hơn, dùng get_air_quality_historical().
+        """
         hourly = data.get("hourly", {}) or {}
         times = hourly.get("time", [])
         aqis = hourly.get("us_aqi", []) or []

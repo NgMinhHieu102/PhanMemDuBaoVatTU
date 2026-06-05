@@ -62,6 +62,10 @@ export default function DiseaseCaseDetail() {
   // Filters trong trang chi tiết
   const [supplyKeyword, setSupplyKeyword] = useState('');
   const [diseaseFilter, setDiseaseFilter] = useState<string>('all');
+  
+  // Phân trang
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
 
   useEffect(() => {
     setPageTitle('Chi Tiết Sử Dụng Thuốc');
@@ -104,6 +108,17 @@ export default function DiseaseCaseDetail() {
       return true;
     });
   }, [data, diseaseFilter, supplyKeyword]);
+
+  // Reset trang về 1 khi filter thay đổi
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [diseaseFilter, supplyKeyword]);
+
+  // Phân trang
+  const totalPages = Math.ceil(filteredSupplies.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedSupplies = filteredSupplies.slice(startIndex, endIndex);
 
   if (loading) {
     return (
@@ -313,7 +328,7 @@ export default function DiseaseCaseDetail() {
             </tr>
           </thead>
           <tbody>
-            {filteredSupplies.length === 0 ? (
+            {paginatedSupplies.length === 0 ? (
               <tr>
                 <td
                   colSpan={6}
@@ -325,7 +340,7 @@ export default function DiseaseCaseDetail() {
                 </td>
               </tr>
             ) : (
-              filteredSupplies.map((s) => (
+              paginatedSupplies.map((s) => (
                 <tr
                   key={s.supply_id}
                   className="border-t border-neutral-100 hover:bg-neutral-50"
@@ -378,6 +393,65 @@ export default function DiseaseCaseDetail() {
             )}
           </tbody>
         </table>
+
+        {/* Footer với phân trang */}
+        {filteredSupplies.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t border-neutral-100 text-sm text-neutral-500">
+            <span className="text-xs">
+              Hiển thị {startIndex + 1}-{Math.min(endIndex, filteredSupplies.length)} trong số {filteredSupplies.length} kết quả
+            </span>
+            
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1.5 text-xs border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Trước
+                </button>
+                
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    // Hiển thị tối đa 5 trang
+                    let pageNum;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+                    
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`w-8 h-8 text-xs rounded-lg ${
+                          currentPage === pageNum
+                            ? 'bg-blue-600 text-white font-medium'
+                            : 'border border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+                
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-1.5 text-xs border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Sau
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

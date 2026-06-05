@@ -178,7 +178,6 @@ class InventoryResponse(ORMBase, InventoryBase):
 class EnvironmentalDataBase(BaseModel):
     recorded_at: datetime
     location: str = Field(..., min_length=1)
-    district_ward: Optional[str] = None
     # Spec 4.4 — validate range
     temperature: Optional[float] = Field(None, ge=10, le=45, description="°C, 10-45")
     humidity: Optional[float] = Field(None, ge=0, le=100, description="%, 0-100")
@@ -196,7 +195,6 @@ class EnvironmentalDataUpdate(BaseModel):
     """Cập nhật một phần — tất cả field optional, vẫn validate range."""
     recorded_at: Optional[datetime] = None
     location: Optional[str] = Field(None, min_length=1)
-    district_ward: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=10, le=45)
     humidity: Optional[float] = Field(None, ge=0, le=100)
     rainfall: Optional[float] = Field(None, ge=0)
@@ -219,7 +217,6 @@ class DiseaseCaseBase(BaseModel):
     disease_type: Optional[str] = Field(None, description="Loại bệnh (respiratory)")
     case_count: int = Field(..., ge=0)
     location: str = Field(..., min_length=1)
-    district_ward: Optional[str] = None
     severity: Optional[str] = Field(None, description="mild, moderate, severe")
     length_of_stay: Optional[int] = Field(None, ge=0, description="Số ngày nằm viện")
     sub_icd_count: Optional[int] = Field(None, ge=0, description="Số bệnh kèm theo")
@@ -238,7 +235,6 @@ class DiseaseCaseUpdate(BaseModel):
     disease_type: Optional[str] = None
     case_count: Optional[int] = Field(None, ge=0)
     location: Optional[str] = None
-    district_ward: Optional[str] = None
     severity: Optional[str] = None
     length_of_stay: Optional[int] = Field(None, ge=0)
     sub_icd_count: Optional[int] = Field(None, ge=0)

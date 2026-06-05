@@ -4,7 +4,6 @@ import { useUIStore } from '../store/uiStore';
 import {
   useAnalyzeForecast,
   useDiseaseOptions,
-  useForecastHistory,
 } from '../hooks/useForecastAnalysis';
 import api from '../services/api';
 import type { AnalyzeResponse } from '../services/forecastAnalysisService';
@@ -18,7 +17,7 @@ import ForecastVsActualChart from '../components/forecasting/ForecastVsActualCha
 import ComparisonChart from '../components/forecasting/ComparisonChart';
 import CurrentYearTrendChart from '../components/forecasting/CurrentYearTrendChart';
 import CorrelationChart from '../components/forecasting/CorrelationChart';
-import ForecastHistoryTable from '../components/forecasting/ForecastHistoryTable';
+import RecentMonthDataTable from '../components/forecasting/RecentMonthDataTable';
 
 /**
  * Module 5 — Phân tích & Dự báo số ca bệnh
@@ -37,15 +36,46 @@ export default function Forecasting() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   }, []);
 
-  const [filters, setFilters] = useState<ForecastFilters>({
-    disease: 'dengue_fever',
-    province: 'all',
-    ward: 'all',
-    month: defaultMonth,
+  // Lưu filters vào localStorage để persist khi navigate
+  const [filters, setFilters] = useState<ForecastFilters>(() => {
+    try {
+      const saved = localStorage.getItem('forecast_filters');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore
+    }
+    return {
+      disease: 'dengue_fever',
+      province: 'all',
+      month: defaultMonth,
+    };
   });
 
-  const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  // Sync filters to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('forecast_filters', JSON.stringify(filters));
+  }, [filters]);
+
+  // Lưu result vào localStorage để persist khi navigate
+  const [result, setResult] = useState<AnalyzeResponse | null>(() => {
+    try {
+      const saved = localStorage.getItem('forecast_result');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const [exporting, setExporting] = useState(false);
+
+  // Sync result to localStorage whenever it changes
+  useEffect(() => {
+    if (result) {
+      localStorage.setItem('forecast_result', JSON.stringify(result));
+    }
+  }, [result]);
 
   const { data: diseases = [] } = useDiseaseOptions();
 
@@ -86,29 +116,14 @@ export default function Forecasting() {
 
   const analyze = useAnalyzeForecast();
 
-  // Lịch sử dự báo — tự refetch khi analyze thành công
-  const history = useForecastHistory({ limit: 5 });
-
-  // Auto-pick disease nếu list có dữ liệu mà filters đang trống
-  useEffect(() => {
-    if (diseases.length > 0 && !diseases.some((d) => d.key === filters.disease)) {
-      setFilters((f) => ({ ...f, disease: diseases[0].key }));
-    }
-  }, [diseases, filters.disease]);
-
   const runAnalyze = () => {
     if (!filters.disease || !filters.month) {
       console.warn('[Forecasting] missing disease or month', filters);
       return;
     }
     const [yStr, mStr] = filters.month.split('-');
-    // Ưu tiên quận/huyện > tỉnh > null (toàn quốc)
-    const regionValue =
-      filters.ward !== 'all'
-        ? filters.ward
-        : filters.province !== 'all'
-        ? filters.province
-        : null;
+    // Sử dụng tỉnh hoặc null (toàn quốc)
+    const regionValue = filters.province !== 'all' ? filters.province : null;
     const payload = {
       disease_type: filters.disease,
       region: regionValue,
@@ -116,11 +131,12 @@ export default function Forecasting() {
       target_year: Number(yStr),
     };
     console.log('[Forecasting] analyze payload', payload);
+    // Reset result trước khi chạy phân tích mới
+    setResult(null);
     analyze.mutate(payload, {
       onSuccess: (data) => {
         console.log('[Forecasting] analyze ok', data.forecast);
         setResult(data);
-        history.refetch();
       },
       onError: (err) => {
         console.error('[Forecasting] analyze failed', err);
@@ -128,20 +144,11 @@ export default function Forecasting() {
     });
   };
 
-  // Auto-run lần đầu khi đã có disease + chưa có result
-  const hasAutoRun = useRef(false);
+  // Auto-pick disease nếu list có dữ liệu mà filters đang trống
   useEffect(() => {
-    if (
-      !hasAutoRun.current &&
-      diseases.length > 0 &&
-      filters.disease &&
-      !result &&
-      !analyze.isPending
-    ) {
-      hasAutoRun.current = true;
-      runAnalyze();
+    if (diseases.length > 0 && !diseases.some((d) => d.key === filters.disease)) {
+      setFilters((f) => ({ ...f, disease: diseases[0].key }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diseases, filters.disease]);
 
   const targetMonthNum = result?.forecast.target_month ?? Number(filters.month.split('-')[1]);
@@ -283,11 +290,11 @@ export default function Forecasting() {
             coefficients={result.charts.correlation_coefficients}
           />
 
-          {/* Row 4: Lịch sử dự báo */}
-          <ForecastHistoryTable
-            rows={history.data ?? []}
-            isLoading={history.isLoading}
-            onUpdated={() => history.refetch()}
+          {/* Row 4: Dữ liệu ca bệnh gần đây */}
+          <RecentMonthDataTable
+            key={result.forecast.id} // Force reload khi có forecast mới
+            currentMonth={targetMonthNum}
+            currentYear={targetYearNum}
           />
         </>
       )}

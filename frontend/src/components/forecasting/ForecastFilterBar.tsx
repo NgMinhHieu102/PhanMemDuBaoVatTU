@@ -1,14 +1,10 @@
 import { ChevronDown, Loader2 } from 'lucide-react';
 import { cn } from '../../utils/cn';
-import {
-  VN_PROVINCES,
-  getDistrictsForRegion,
-} from '../../utils/vietnamRegions';
+import { VN_PROVINCES } from '../../utils/vietnamRegions';
 
 export interface ForecastFilters {
   disease: string;
   province: string; // 'all' = toàn thành phố, hoặc tên tỉnh/thành
-  ward: string;     // 'all' = tất cả quận/huyện, hoặc tên quận/huyện
   month: string;    // YYYY-MM
 }
 
@@ -40,14 +36,9 @@ export default function ForecastFilterBar({
   const update = (patch: Partial<ForecastFilters>) =>
     onChange({ ...filters, ...patch });
 
-  const districtList =
-    filters.province !== 'all'
-      ? getDistrictsForRegion(filters.province, regionDistricts)
-      : [];
-
   return (
     <div className="bg-white rounded-2xl border border-neutral-200 p-5">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
         <FilterField label="Bệnh dịch">
           <SelectInput
             value={filters.disease}
@@ -68,31 +59,12 @@ export default function ForecastFilterBar({
         <FilterField label="Tỉnh/Thành phố">
           <SelectInput
             value={filters.province}
-            onChange={(v) => update({ province: v, ward: 'all' })}
+            onChange={(v) => update({ province: v })}
           >
             <option value="all">Toàn thành phố / cả nước</option>
             {VN_PROVINCES.map((p) => (
               <option key={p} value={p}>
                 {p}
-              </option>
-            ))}
-          </SelectInput>
-        </FilterField>
-
-        <FilterField label="Phường/Xã">
-          <SelectInput
-            value={filters.ward}
-            onChange={(v) => update({ ward: v })}
-            disabled={filters.province === 'all'}
-          >
-            <option value="all">
-              {filters.province === 'all'
-                ? 'Chọn Tỉnh/Thành trước'
-                : 'Tất cả phường/xã'}
-            </option>
-            {districtList.map((d) => (
-              <option key={d} value={d}>
-                {d}
               </option>
             ))}
           </SelectInput>

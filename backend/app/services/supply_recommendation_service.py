@@ -152,14 +152,18 @@ class SupplyRecommendationService:
             if need_before_buffer <= 0:
                 continue
 
-            # Mục 6: Nhu cầu cuối = nhu cầu trước × (1 + buffer_rate%)
-            predicted_need = round(need_before_buffer * (1 + buffer_rate / 100))
+            # Mục 6: Ngưỡng AT (Nhu cầu cuối) = Nhu cầu trước dự phòng × (1 + % dự phòng)
+            # Đây là safety_stock được tính tự động theo công thức
+            calculated_safety_stock = round(need_before_buffer * (1 + buffer_rate / 100))
+            
+            # predicted_need giữ nguyên giá trị (bằng với calculated_safety_stock)
+            predicted_need = calculated_safety_stock
 
-            # Mục 7: Đề xuất nhập
+            # Mục 7: Đề xuất nhập = max(0, Nhu cầu dự báo + Ngưỡng an toàn - Tồn kho hiện tại)
             inv = self._get_inventory(sid)
             suggested_import = max(
                 0,
-                predicted_need + inv["safety_stock"] - inv["current_stock"],
+                predicted_need + calculated_safety_stock - inv["current_stock"],
             )
 
             items.append({
@@ -177,9 +181,11 @@ class SupplyRecommendationService:
                 "need_before_buffer": need_before_buffer,
                 "buffer_rate": buffer_rate,
                 "predicted_need": predicted_need,
+                # Ngưỡng AT được tính tự động theo công thức
+                "calculated_safety_stock": calculated_safety_stock,
                 # Tồn kho
                 "current_stock": inv["current_stock"],
-                "safety_stock": inv["safety_stock"],
+                "safety_stock": inv["safety_stock"],  # Giữ lại từ DB để tham khảo
                 # Đề xuất nhập (mục 7)
                 "suggested_import": suggested_import,
                 # Trạng thái

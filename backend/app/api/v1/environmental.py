@@ -30,7 +30,7 @@ def get_client_ip(request: Request) -> str:
 @router.get("/", response_model=List[EnvironmentalDataResponse])
 def list_environmental_data(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1),  # Bỏ giới hạn tối đa
     location: Optional[str] = Query(None, description="Filter by location"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -467,7 +467,7 @@ def sync_openmeteo(
         description="Tỉnh/thành để sync (mặc định TP. HCM)",
     ),
     months_back: int = Query(
-        12, ge=1, le=24,
+        12, ge=1, le=120,
         description="Số tháng quá khứ cần sync (gộp historical archive)",
     ),
     forecast_days: int = Query(
@@ -528,12 +528,21 @@ def sync_openmeteo(
         logger.error("Open-Meteo forecast fetch failed: %s", exc)
         forecast_rows = []
 
-    # Bước 3: Air quality (forecast 5-7 ngày)
+    # Bước 3: Air quality - dùng historical API để lấy toàn bộ data
+    # Lấy AQI/PM2.5 cho cùng khoảng thời gian với weather historical
     try:
-        aq_rows = client.get_air_quality_daily(lat, lon, forecast_days=5, past_days=7)
+        # Historical AQI/PM2.5
+        aq_rows = client.get_air_quality_historical(lat, lon, earliest, historical_end)
     except Exception as exc:
-        logger.warning("Open-Meteo air-quality fetch failed: %s", exc)
+        logger.warning("Open-Meteo air-quality historical fetch failed: %s", exc)
         aq_rows = []
+    
+    # Forecast AQI/PM2.5 (5 ngày)
+    try:
+        aq_forecast = client.get_air_quality_daily(lat, lon, forecast_days=5, past_days=0)
+        aq_rows.extend(aq_forecast)
+    except Exception as exc:
+        logger.warning("Open-Meteo air-quality forecast fetch failed: %s", exc)
 
     # Build map ngày → AQI cho merge
     aq_map = {r["date"]: r for r in aq_rows}

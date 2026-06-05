@@ -578,32 +578,30 @@ async def get_dashboard_summary(
         else 0.0
     )
 
-    # 2. Số ca dự báo tháng tới - Lấy từ SupplyRecommendation thay vì DiseaseForecast
-    if first_of_this_month.month == 12:
-        first_of_next_month = first_of_this_month.replace(year=first_of_this_month.year + 1, month=1)
-        end_of_next_month = first_of_next_month.replace(month=2) - timedelta(days=1)
-    else:
-        first_of_next_month = first_of_this_month.replace(month=first_of_this_month.month + 1)
-        if first_of_next_month.month == 12:
-            end_of_next_month = first_of_next_month.replace(year=first_of_next_month.year + 1, month=1) - timedelta(days=1)
-        else:
-            end_of_next_month = first_of_next_month.replace(month=first_of_next_month.month + 1) - timedelta(days=1)
-
-    # Lấy dự báo từ SupplyRecommendation (tính theo số ca dự báo)
-    predicted_next = (
-        db.query(func.coalesce(func.sum(SupplyRecommendation.predicted_cases), 0))
-        .filter(
-            SupplyRecommendation.forecast_month >= first_of_next_month,
-            SupplyRecommendation.forecast_month <= end_of_next_month,
-        )
+    # 2. Số ca dự báo - Lấy từ SupplyRecommendation (tháng mới nhất có dữ liệu)
+    # Tìm tháng dự báo gần nhất
+    latest_forecast_month = (
+        db.query(func.max(SupplyRecommendation.forecast_month))
         .scalar()
-        or 0
     )
-    predicted_trend_pct = (
-        round(100.0 * (predicted_next - total_current) / total_current, 1)
-        if total_current > 0
-        else 0.0
-    )
+    
+    if latest_forecast_month:
+        # Lấy tổng predicted_cases của tháng dự báo mới nhất
+        predicted_next = (
+            db.query(func.coalesce(func.sum(SupplyRecommendation.predicted_cases), 0))
+            .filter(SupplyRecommendation.forecast_month == latest_forecast_month)
+            .scalar()
+            or 0
+        )
+        predicted_trend_pct = (
+            round(100.0 * (predicted_next - total_current) / total_current, 1)
+            if total_current > 0
+            else 0.0
+        )
+    else:
+        # Không có dữ liệu dự báo
+        predicted_next = 0
+        predicted_trend_pct = 0.0
 
     # 3. Số vật tư thiếu hụt (alerts chưa xử lý)
     shortage_count = (

@@ -74,14 +74,15 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
   const loadData = async () => {
     try {
       setLoading(true);
-      // Lấy dữ liệu ca bệnh thực tế từ backend
+      // Lấy dữ liệu ca bệnh thực tế + dự báo từ backend.
+      // Tăng limit cao để không bị cắt mất khu vực khi ghép forecast.
       const [casesResponse, forecastResponse] = await Promise.all([
         api.get('/disease-cases/', {
-          params: { limit: 500 } // Lấy nhiều để có đủ data filter
+          params: { limit: 50000 },
         }),
         api.get('/forecast/history', {
-          params: { limit: 100 }
-        }).catch(() => ({ data: [] })) // Fallback nếu chưa có dữ liệu forecast
+          params: { limit: 1000 },
+        }).catch(() => ({ data: [] })), // Fallback nếu chưa có dữ liệu forecast
       ]);
       
       // Group cases by month + disease + location

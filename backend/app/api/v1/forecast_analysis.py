@@ -455,6 +455,8 @@ async def analyze_forecast(
         predicted = 0
         baseline = 0.0
         baseline_years_set: set[int] = set()
+        # Lưu dự báo từng tỉnh để hiển thị bảng "Dữ liệu ca bệnh gần đây"
+        per_province: list[dict] = []
         # Dùng weather/trend của tỉnh có nhiều ca nhất để hiển thị giải thích
         rep = None
         rep_cases = -1
@@ -463,6 +465,13 @@ async def analyze_forecast(
             predicted += p
             baseline += b
             baseline_years_set.update(byrs)
+            per_province.append({
+                "location": prov,
+                "predicted": p,
+                "baseline": b,
+                "weather_factor": wf,
+                "trend_factor": tf,
+            })
             if b > rep_cases:
                 rep_cases = b
                 rep = (wf, tf, fw, hw, wb, tb)
@@ -477,6 +486,7 @@ async def analyze_forecast(
     else:
         (predicted, baseline, weather_factor, trend_factor, forecast_w,
          history_w_avg, weather_bullets, trend_bullet, baseline_years) = _compute_one_region(region)
+        per_province = []
 
     # predicted đã được tính ở trên (theo từng khu vực hoặc cộng dồn toàn quốc)
     # ── Ghi đè bằng mô hình ML (MonthlyForecaster) ────────────────────────
@@ -647,6 +657,117 @@ async def analyze_forecast(
     db.add(saved)
     db.commit()
     db.refresh(saved)
+
+    # Khi phân tích TOÀN QUỐC: lưu thêm dự báo của TỪNG TỈNH để bảng "Dữ liệu
+    # ca bệnh gần đây" hiển thị dự báo theo khu vực (không chỉ con số tổng).
+    if region is None and per_province:
+        for pp in per_province:
+            loc = pp["location"]
+            pred_p = pp["predicted"]
+            base_p = pp["baseline"]
+            rl_p, _ = _classify_risk(pred_p, base_p)
+            # Xoá forecast cũ của tỉnh này cho cùng tháng/bệnh
+            old_p = (
+                db.query(DiseaseForecast)
+                .filter(
+                    DiseaseForecast.icd_code == disease,
+                    DiseaseForecast.forecast_month == forecast_date,
+                    DiseaseForecast.location == loc,
+                )
+                .all()
+            )
+            for fc in old_p:
+                db.delete(fc)
+            db.add(DiseaseForecast(
+                forecast_month=forecast_date,
+                forecast_date=forecast_date,
+                icd_code=disease,
+                disease_name=disease_name_label,
+                disease_type="respiratory",
+                location=loc,
+                predicted_cases=pred_p,
+                confidence_lower=int(pred_p * 0.85),
+                confidence_upper=int(pred_p * 1.15),
+                model_used=model_used,
+                baseline_cases=int(base_p),
+                weather_factor=pp["weather_factor"],
+                trend_factor=pp["trend_factor"],
+                risk_level=rl_p,
+                forecast_period_days=30,
+                created_by=current_user.username,
+            ))
+        db.commit()
+
+    # Khi phân tích TOÀN QUỐC: lưu thêm dự báo cho TỪNG TỈNH để bảng
+    # "Dữ liệu ca bệnh gần đây" hiển thị số dự báo riêng từng khu vực.
+    if region is None:
+        try:
+            from app.ai_engine.db_forecasting_service import DBForecastingService
+            from app.models.supply_requirement import SupplyRequirement
+
+            svc = DBForecastingService(db)
+            provinces_to_forecast = [
+                r[0] for r in db.query(DiseaseCase.location)
+                .filter(DiseaseCase.icd_code == disease)
+                .distinct().all()
+                if r[0]
+            ]
+            for prov in provinces_to_forecast:
+                try:
+                    pr = svc.analyze(
+                        icd_code=disease,
+                        target_month=payload.target_month,
+                        target_year=payload.target_year,
+                        region=prov,
+                    )
+                    p_pred = int(pr["predicted_cases"])
+                    p_fd = pr.get("formula_details", {}) or {}
+                    p_base = float(p_fd.get("baseline", 0) or 0)
+                    p_risk, _ = _classify_risk(p_pred, p_base)
+                    p_m = pr.get("model_metrics", {}) or {}
+                except Exception:
+                    continue
+
+                # Xoá forecast cũ của tỉnh này (cùng bệnh, tháng)
+                old_prov = (
+                    db.query(DiseaseForecast)
+                    .filter(
+                        DiseaseForecast.icd_code == disease,
+                        DiseaseForecast.forecast_month == forecast_date,
+                        DiseaseForecast.location == prov,
+                    )
+                    .all()
+                )
+                if old_prov:
+                    old_ids = [f.id for f in old_prov]
+                    db.query(SupplyRequirement).filter(
+                        SupplyRequirement.forecast_id.in_(old_ids)
+                    ).delete(synchronize_session=False)
+                    for fc in old_prov:
+                        db.delete(fc)
+                    db.flush()
+
+                db.add(DiseaseForecast(
+                    forecast_month=forecast_date,
+                    forecast_date=forecast_date,
+                    icd_code=disease,
+                    disease_name=disease_name_label,
+                    disease_type="respiratory",
+                    location=prov,
+                    predicted_cases=p_pred,
+                    confidence_lower=int(p_pred * 0.85),
+                    confidence_upper=int(p_pred * 1.15),
+                    model_used=model_used,
+                    baseline_cases=int(p_base),
+                    risk_level=p_risk,
+                    forecast_period_days=30,
+                    created_by=current_user.username,
+                    model_accuracy_mape=round(p_m.get("mape", 0), 2) if p_m else None,
+                ))
+            db.commit()
+        except Exception as exc:
+            logger.warning("Per-province forecast save failed: %s", exc)
+            db.rollback()
 
     # Spec 5 → Bước 5: tự sinh supply_requirements để Module 7 (/alerts) có data
     try:

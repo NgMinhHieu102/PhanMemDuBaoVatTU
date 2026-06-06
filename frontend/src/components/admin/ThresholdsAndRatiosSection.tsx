@@ -44,7 +44,8 @@ type RatiosForm = z.infer<typeof ratiosSchema>;
 export default function ThresholdsAndRatiosSection() {
   return (
     <div className="space-y-5">
-      <ConversionRatiosCard />
+      {/* ConversionRatiosCard đã ẩn — định mức dùng cho dự báo nằm ở tab
+          "Định mức thuốc/vật tư" (theo Nhẹ/TB/Nặng). */}
       <ThresholdsCard />
     </div>
   );

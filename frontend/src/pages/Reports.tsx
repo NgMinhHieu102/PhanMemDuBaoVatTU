@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Download, FileSpreadsheet, FileText, Eye } from 'lucide-react';
 import { useUIStore } from '../store/uiStore';
 import {
@@ -12,6 +13,7 @@ import {
   useRegionOptions,
 } from '../hooks/useForecastAnalysis';
 import { useInventory } from '../hooks/useInventory';
+import { epidemiologyService } from '../services/epidemiologyService';
 import { reportsService } from '../services/reportsService';
 import { SUPPLY_CATEGORY_LABELS } from '../utils/constants';
 import ReportTypePicker, {
@@ -88,13 +90,33 @@ export default function Reports() {
   const forecastHistory = useForecastHistory(
     kind === 'forecast' || kind === 'accuracy'
       ? {
-          limit: 100,
+          limit: 1000,
           disease_type:
             filters.diseaseType !== 'all' ? filters.diseaseType : undefined,
           region: filters.region !== 'all' ? filters.region : undefined,
+          start_date: filters.startDate || undefined,
+          end_date: filters.endDate || undefined,
         }
       : undefined,
   );
+
+  // Báo cáo "Tình hình dịch bệnh" lấy SỐ CA THẬT từ disease_cases (đã import),
+  // không phải từ bảng dự báo.
+  const diseaseCases = useQuery({
+    queryKey: ['report-disease-cases', filters.diseaseType, filters.region],
+    queryFn: () =>
+      epidemiologyService.getDiseaseCases({
+        limit: 50000,
+        disease_type:
+          filters.diseaseType !== 'all'
+            ? (filters.diseaseType as any)
+            : undefined,
+        location: filters.region !== 'all' ? filters.region : undefined,
+      }),
+    enabled: kind === 'epidemic',
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 
   const categoryOptions = useMemo(
     () =>
@@ -139,7 +161,11 @@ export default function Reports() {
   const preview = useMemo(() => {
     switch (kind) {
       case 'epidemic':
-        return buildEpidemicPreview(forecastHistory.data ?? []);
+        return buildEpidemicPreview(
+          diseaseCases.data ?? [],
+          filters.startDate,
+          filters.endDate,
+        );
       case 'forecast':
         return buildForecastPreview(forecastHistory.data ?? []);
       case 'inventory':
@@ -158,13 +184,17 @@ export default function Reports() {
     requirements.data,
     inventory.data,
     forecastHistory.data,
+    diseaseCases.data,
+    filters.startDate,
+    filters.endDate,
   ]);
 
   const isLoading =
     (kind === 'inventory' && inventory.isLoading) ||
     ((kind === 'shortage' || kind === 'procurement') && requirements.isLoading) ||
     (kind === 'accuracy' && accuracy.isLoading) ||
-    ((kind === 'forecast' || kind === 'epidemic') && forecastHistory.isLoading);
+    (kind === 'forecast' && forecastHistory.isLoading) ||
+    (kind === 'epidemic' && diseaseCases.isLoading);
 
   return (
     <div className="space-y-5">
@@ -324,13 +354,40 @@ interface PreviewBundle {
   }>;
 }
 
-function buildEpidemicPreview(history: any[]): PreviewBundle {
-  // Báo cáo dịch bệnh — dùng forecast history kèm số ca thực tế
-  const totalActual = history.reduce(
-    (acc, r) => acc + (r.actual_cases ?? 0),
+function buildEpidemicPreview(
+  cases: any[],
+  startDate?: string,
+  endDate?: string,
+): PreviewBundle {
+  // Lọc theo khoảng thời gian (recorded_at) phía client
+  const from = startDate ? new Date(`${startDate}T00:00:00`) : null;
+  const to = endDate ? new Date(`${endDate}T23:59:59`) : null;
+  const filtered = cases.filter((c) => {
+    const d = new Date(c.recorded_at);
+    if (from && d < from) return false;
+    if (to && d > to) return false;
+    return true;
+  });
+
+  const totalActual = filtered.reduce(
+    (acc, c) => acc + (c.case_count ?? 0),
     0,
   );
-  const monthsCovered = new Set(history.map((r) => r.month)).size;
+  const monthsCovered = new Set(
+    filtered.map((c) => (c.recorded_at ?? '').slice(0, 7)),
+  ).size;
+  const diseasesCount = new Set(filtered.map((c) => c.icd_code)).size;
+
+  const monthLabel = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  };
+
+  // Sắp xếp mới nhất trước
+  const sorted = [...filtered].sort(
+    (a, b) =>
+      new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime(),
+  );
 
   return {
     metrics: [
@@ -339,14 +396,8 @@ function buildEpidemicPreview(history: any[]): PreviewBundle {
         value: totalActual.toLocaleString('vi-VN'),
         hint: `Trong ${monthsCovered} tháng`,
       },
-      {
-        label: 'Số tháng có dữ liệu',
-        value: monthsCovered,
-      },
-      {
-        label: 'Số bệnh được ghi nhận',
-        value: new Set(history.map((r) => r.disease_type)).size,
-      },
+      { label: 'Số tháng có dữ liệu', value: monthsCovered },
+      { label: 'Số bệnh được ghi nhận', value: diseasesCount },
     ],
     sections: [
       {
@@ -357,14 +408,11 @@ function buildEpidemicPreview(history: any[]): PreviewBundle {
           { key: 'region', label: 'Khu vực' },
           { key: 'actual_cases', label: 'Số ca thực tế', align: 'right' },
         ],
-        rows: history.slice(0, 20).map((r) => ({
-          month: `Tháng ${r.month}`,
-          disease_label: r.disease_label,
-          region: r.region,
-          actual_cases:
-            r.actual_cases !== null
-              ? r.actual_cases.toLocaleString('vi-VN')
-              : '—',
+        rows: sorted.map((c) => ({
+          month: `Tháng ${monthLabel(c.recorded_at)}`,
+          disease_label: c.disease_name || c.icd_code,
+          region: c.location || '—',
+          actual_cases: (c.case_count ?? 0).toLocaleString('vi-VN'),
         })),
       },
     ],
@@ -402,7 +450,7 @@ function buildForecastPreview(history: any[]): PreviewBundle {
           { key: 'predicted_cases', label: 'Số ca dự báo', align: 'right' },
           { key: 'risk_level', label: 'Mức nguy cơ' },
         ],
-        rows: history.slice(0, 20).map((r) => ({
+        rows: history.map((r) => ({
           month: `Tháng ${r.month}`,
           disease_label: r.disease_label,
           region: r.region,
@@ -442,8 +490,8 @@ function buildInventoryPreview(items: any[]): PreviewBundle {
           { key: 'current_stock', label: 'Tồn kho', align: 'right' },
           { key: 'safety_stock', label: 'Ngưỡng AT', align: 'right' },
         ],
-        rows: items.slice(0, 30).map((i: any) => ({
-          name: i.supply?.name ?? '—',
+        rows: items.map((i: any) => ({
+          name: i.supply?.ten_hoat_chat ?? i.supply?.name ?? '—',
           category:
             SUPPLY_CATEGORY_LABELS[i.supply?.category] ??
             i.supply?.category ??
@@ -482,7 +530,7 @@ function buildShortagePreview(items: any[]): PreviewBundle {
           { key: 'stock', label: 'Tồn kho', align: 'right' },
           { key: 'shortage', label: 'Mức thiếu', align: 'right' },
         ],
-        rows: shortageItems.slice(0, 30).map((i: any) => ({
+        rows: shortageItems.map((i: any) => ({
           name: i.supply_name,
           unit: i.supply_unit ?? '',
           demand: (i.total_required_quantity ?? 0).toLocaleString('vi-VN'),
@@ -525,7 +573,7 @@ function buildProcurementPreview(items: any[]): PreviewBundle {
           { key: 'stock', label: 'Tồn hiện tại', align: 'right' },
           { key: 'recommended', label: 'SL đề xuất', align: 'right' },
         ],
-        rows: rows.slice(0, 30).map(({ i, recommended, stock, demand }) => ({
+        rows: rows.map(({ i, recommended, stock, demand }) => ({
           name: i.supply_name,
           unit: i.supply_unit ?? '',
           demand: demand.toLocaleString('vi-VN'),
@@ -564,7 +612,7 @@ function buildAccuracyPreview(_accuracy: any, history: any[]): PreviewBundle {
           { key: 'actual_cases', label: 'Thực tế', align: 'right' },
           { key: 'deviation', label: 'Độ lệch', align: 'right' },
         ],
-        rows: withActual.slice(0, 30).map((r: any) => ({
+        rows: withActual.map((r: any) => ({
           month: `Tháng ${r.month}`,
           disease_label: r.disease_label,
           predicted_cases: r.predicted_cases.toLocaleString('vi-VN'),

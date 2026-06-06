@@ -133,11 +133,12 @@ def delete_disease(
 
 
 def _seed_diseases() -> List[Dict[str, Any]]:
+    # 4 bệnh hô hấp dùng cho dự báo (theo mã ICD)
     return [
-        {"key": "dengue_fever", "label": "Sốt xuất huyết", "description": "Dengue fever"},
-        {"key": "seasonal_flu", "label": "Cúm mùa", "description": "Seasonal influenza"},
-        {"key": "respiratory_disease", "label": "Bệnh hô hấp", "description": "Respiratory disease"},
-        {"key": "viral_infection", "label": "Nhiễm virus", "description": "General viral infection"},
+        {"key": "J20", "label": "Viêm phế quản cấp", "description": "Acute bronchitis"},
+        {"key": "J06", "label": "Nhiễm trùng đường hô hấp trên cấp", "description": "Acute upper respiratory infection"},
+        {"key": "J02", "label": "Viêm họng cấp", "description": "Acute pharyngitis"},
+        {"key": "J01", "label": "Viêm xoang cấp", "description": "Acute sinusitis"},
     ]
 
 

@@ -1,4 +1,5 @@
-import { Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { REPORT_TYPES, type ReportKind } from './ReportTypePicker';
 
@@ -106,7 +107,16 @@ function MetricBlock({ label, value, hint, tone = 'default' }: PreviewMetric) {
   );
 }
 
+const ROWS_PER_PAGE = 10;
+
 function PreviewTable({ section }: { section: PreviewSection }) {
+  const [page, setPage] = useState(1);
+  const total = section.rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / ROWS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * ROWS_PER_PAGE;
+  const pageRows = section.rows.slice(start, start + ROWS_PER_PAGE);
+
   return (
     <div>
       <h4 className="text-sm font-semibold text-neutral-900 mb-2">
@@ -130,7 +140,7 @@ function PreviewTable({ section }: { section: PreviewSection }) {
             </tr>
           </thead>
           <tbody>
-            {section.rows.length === 0 ? (
+            {total === 0 ? (
               <tr>
                 <td
                   colSpan={section.columns.length}
@@ -140,8 +150,8 @@ function PreviewTable({ section }: { section: PreviewSection }) {
                 </td>
               </tr>
             ) : (
-              section.rows.map((row, idx) => (
-                <tr key={idx} className="border-t border-neutral-100">
+              pageRows.map((row, idx) => (
+                <tr key={start + idx} className="border-t border-neutral-100">
                   {section.columns.map((c) => (
                     <td
                       key={c.key}
@@ -159,6 +169,55 @@ function PreviewTable({ section }: { section: PreviewSection }) {
           </tbody>
         </table>
       </div>
+
+      {total > ROWS_PER_PAGE && (
+        <div className="flex flex-wrap items-center justify-between gap-3 mt-3 text-sm text-neutral-500">
+          <span className="text-xs">
+            Hiển thị {start + 1}-{Math.min(start + ROWS_PER_PAGE, total)} trong số{' '}
+            {total.toLocaleString('vi-VN')} dòng
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              className="p-1.5 border border-neutral-200 rounded-md disabled:opacity-30 hover:bg-neutral-50"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            {Array.from({ length: Math.min(totalPages, 5) }).map((_, i) => {
+              let pageNum: number;
+              if (totalPages <= 5) pageNum = i + 1;
+              else if (safePage <= 3) pageNum = i + 1;
+              else if (safePage >= totalPages - 2) pageNum = totalPages - 4 + i;
+              else pageNum = safePage - 2 + i;
+              return (
+                <button
+                  key={pageNum}
+                  type="button"
+                  onClick={() => setPage(pageNum)}
+                  className={cn(
+                    'w-8 h-8 rounded-md text-sm font-medium',
+                    safePage === pageNum
+                      ? 'bg-blue-600 text-white'
+                      : 'border border-neutral-200 text-neutral-600 hover:bg-neutral-50',
+                  )}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage >= totalPages}
+              className="p-1.5 border border-neutral-200 rounded-md disabled:opacity-30 hover:bg-neutral-50"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

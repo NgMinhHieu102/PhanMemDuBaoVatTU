@@ -721,9 +721,11 @@ async def analyze_forecast(
 
 @router.get("/history")
 async def get_forecast_history(
-    limit: int = Query(10, ge=1, le=100),
+    limit: int = Query(10, ge=1, le=1000),
     disease_type: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None, description="Lọc từ tháng dự báo >= ngày này"),
+    end_date: Optional[date] = Query(None, description="Lọc đến tháng dự báo <= ngày này"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
@@ -732,7 +734,13 @@ async def get_forecast_history(
     if disease_type:
         q = q.filter(DiseaseForecast.icd_code == _norm_disease(disease_type))
     if region:
-        q = q.filter(DiseaseForecast.location == region)
+        from app.utils.province_alias import province_aliases
+        q = q.filter(DiseaseForecast.location.in_(province_aliases(region)))
+    # Lọc theo khoảng thời gian dự báo (forecast_month = đầu tháng)
+    if start_date:
+        q = q.filter(DiseaseForecast.forecast_month >= start_date.replace(day=1))
+    if end_date:
+        q = q.filter(DiseaseForecast.forecast_month <= end_date)
     rows = q.limit(limit).all()
 
     out = []

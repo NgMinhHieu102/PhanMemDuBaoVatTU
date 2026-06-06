@@ -2,9 +2,7 @@ import {
   Activity,
   TrendingUp,
   Boxes,
-  AlertTriangle,
   ShoppingCart,
-  Target,
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
 
@@ -47,25 +45,11 @@ export const REPORT_TYPES: ReportTypeMeta[] = [
     accent: 'emerald',
   },
   {
-    key: 'shortage',
-    title: 'Thiếu hụt vật tư',
-    description: 'Vật tư thiếu, mức thiếu, số lượng cần nhập.',
-    icon: AlertTriangle,
-    accent: 'amber',
-  },
-  {
     key: 'procurement',
     title: 'Đề xuất nhập kho',
     description: 'Danh sách vật tư cần nhập kèm lý do đề xuất.',
     icon: ShoppingCart,
     accent: 'violet',
-  },
-  {
-    key: 'accuracy',
-    title: 'Độ chính xác dự báo',
-    description: 'So sánh dự báo - thực tế và sai số mô hình.',
-    icon: Target,
-    accent: 'sky',
   },
 ];
 

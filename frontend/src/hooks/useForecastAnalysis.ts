@@ -54,6 +54,8 @@ export function useForecastHistory(params?: {
   limit?: number;
   disease_type?: string;
   region?: string;
+  start_date?: string;
+  end_date?: string;
 }) {
   const { isAuthenticated } = useAuthStore();
   return useQuery({

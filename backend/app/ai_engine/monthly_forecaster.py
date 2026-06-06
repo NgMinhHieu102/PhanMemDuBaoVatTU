@@ -183,7 +183,21 @@ class MonthlyForecaster:
         if len(y) >= 2:
             mae = float(np.mean(np.abs(y - final_preds)))
             rmse = float(np.sqrt(np.mean((y - final_preds) ** 2)))
-            mape = float(np.mean(np.abs((y - final_preds) / np.maximum(y, 1))) * 100)
+            # MAPE: chỉ tính trên các tháng có số ca thật ĐỦ LỚN. Tháng có số ca
+            # quá nhỏ (1-2 ca) khi chia sẽ tạo độ lệch % khổng lồ (vd sai 9 ca
+            # trên nền 1 ca = 900%), bóp méo trung bình. Ngưỡng = max(5, 10% TB).
+            mean_y = float(np.mean(y)) if len(y) else 0.0
+            floor = max(5.0, 0.1 * mean_y)
+            mask = y >= floor
+            if mask.sum() >= 2:
+                mape = float(
+                    np.mean(np.abs((y[mask] - final_preds[mask]) / y[mask])) * 100
+                )
+            else:
+                # Không đủ tháng "đủ lớn" → fallback dùng toàn bộ với sàn mẫu số
+                mape = float(
+                    np.mean(np.abs((y - final_preds) / np.maximum(y, 1))) * 100
+                )
             ss_res = float(np.sum((y - final_preds) ** 2))
             ss_tot = float(np.sum((y - np.mean(y)) ** 2))
             r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0

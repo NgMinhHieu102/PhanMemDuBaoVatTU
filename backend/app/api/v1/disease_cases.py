@@ -544,32 +544,26 @@ async def import_disease_cases_csv(
                 db.query(CaseSupplyUsage).filter(
                     CaseSupplyUsage.case_id == case_obj.id
                 ).delete(synchronize_session=False)
-                seen_supply_ids: set[int] = set()
+                db.flush()
+                # Gom số lượng theo supply_id TRƯỚC (cộng dồn nếu 1 thuốc xuất
+                # hiện nhiều dòng trong cùng ca) rồi mới insert 1 lần/thuốc —
+                # tránh vi phạm UNIQUE(case_id, supply_id).
+                qty_by_supply: dict[int, int] = {}
                 for sup in entry["supplies"]:
                     supply_obj = _get_or_create_supply(
                         sup["name"], sup["unit"], sup["category"],
                         supply_code=sup.get("supply_code", ""),
                         drug_code=sup.get("drug_code", ""),
                     )
-                    if supply_obj.id in seen_supply_ids:
-                        # Nếu cùng ca cùng thuốc lặp 2 lần → cộng dồn
-                        existing_usage = (
-                            db.query(CaseSupplyUsage)
-                            .filter(
-                                CaseSupplyUsage.case_id == case_obj.id,
-                                CaseSupplyUsage.supply_id == supply_obj.id,
-                            )
-                            .first()
-                        )
-                        if existing_usage:
-                            existing_usage.quantity += sup["qty"]
-                            continue
+                    qty_by_supply[supply_obj.id] = (
+                        qty_by_supply.get(supply_obj.id, 0) + sup["qty"]
+                    )
+                for supply_id, qty in qty_by_supply.items():
                     db.add(CaseSupplyUsage(
                         case_id=case_obj.id,
-                        supply_id=supply_obj.id,
-                        quantity=sup["qty"],
+                        supply_id=supply_id,
+                        quantity=qty,
                     ))
-                    seen_supply_ids.add(supply_obj.id)
     else:
         # Hospital CSV format
         aggregate: dict[tuple, set[str]] = {}

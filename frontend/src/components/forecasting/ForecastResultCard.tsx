@@ -11,6 +11,8 @@ interface Props {
   targetYear: number;
   riskLevel: RiskLevel;
   riskLabel: string;
+  /** Độ chính xác mô hình (%) = 100 − MAPE. Bỏ qua nếu không có. */
+  accuracyPct?: number | null;
 }
 
 const riskConfig: Record<RiskLevel, { badge: string; pill: string; ring: string }> = {
@@ -44,8 +46,19 @@ export default function ForecastResultCard({
   targetYear,
   riskLevel,
   riskLabel,
+  accuracyPct,
 }: Props) {
   const cfg = riskConfig[riskLevel];
+
+  // Màu cho độ chính xác: cao→xanh, vừa→hổ phách, thấp→đỏ
+  const accColor =
+    accuracyPct == null
+      ? ''
+      : accuracyPct >= 80
+      ? 'text-emerald-600'
+      : accuracyPct >= 60
+      ? 'text-amber-600'
+      : 'text-red-600';
 
   return (
     <div
@@ -87,6 +100,17 @@ export default function ForecastResultCard({
           {riskLabel.toUpperCase()}
         </span>
       </div>
+
+      {accuracyPct != null && (
+        <div className="relative mt-2.5 flex items-center justify-between rounded-xl border border-neutral-200 bg-white/70 px-3.5 py-2.5">
+          <span className="text-xs font-semibold uppercase tracking-wide text-neutral-600">
+            Độ chính xác mô hình
+          </span>
+          <span className={cn('text-sm font-extrabold tabular-nums', accColor)}>
+            {accuracyPct.toFixed(1)}%
+          </span>
+        </div>
+      )}
     </div>
   );
 }

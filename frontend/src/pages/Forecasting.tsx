@@ -262,6 +262,11 @@ export default function Forecasting() {
                 targetYear={displayResult.forecast.target_year}
                 riskLevel={displayResult.forecast.risk_level}
                 riskLabel={displayResult.forecast.risk_label}
+                accuracyPct={
+                  displayResult.accuracy != null
+                    ? Math.max(0, 100 - displayResult.accuracy.mape)
+                    : null
+                }
               />
               <ModelExplanation bullets={displayResult.explanation_bullets} />
             </div>

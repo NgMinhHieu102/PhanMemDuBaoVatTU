@@ -29,6 +29,13 @@ export interface AnalyzeResponse {
     target_year: number;
   };
   explanation_bullets: string[];
+  accuracy?: {
+    mae: number;
+    rmse: number;
+    mape: number;
+    r2: number;
+    n_samples: number;
+  } | null;
   weather: {
     forecast: Record<string, number | null>;
     history_avg: Record<string, number | null>;

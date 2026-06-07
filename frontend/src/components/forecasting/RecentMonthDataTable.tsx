@@ -51,6 +51,10 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<DiseaseCaseData[]>([]);
   const [showFilter, setShowFilter] = useState(false);
+  // Temp = đang chỉnh trên dropdown; Applied = đã bấm Lọc, dùng để filter thật.
+  const [tempMonth, setTempMonth] = useState<string>('latest');
+  const [tempDisease, setTempDisease] = useState<string>('all');
+  const [tempLocation, setTempLocation] = useState<string>('all');
   const [filterMonth, setFilterMonth] = useState<string>('latest');
   const [filterDisease, setFilterDisease] = useState<string>('all');
   const [filterLocation, setFilterLocation] = useState<string>('all');
@@ -166,18 +170,26 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
   
   const uniqueLocations = Array.from(new Set(data.map((d) => d.location))).sort();
 
-  // Lọc data
+  // Lọc data — so sánh đã chuẩn hoá (trim) để tránh lệch do khoảng trắng.
   const filteredData = data.filter((item) => {
+    // 1. Tháng
     if (filterMonth === 'latest') {
-      // Chỉ hiển thị tháng gần nhất
-      return item.month === latestMonth;
+      if (item.month !== latestMonth) return false;
     } else if (filterMonth !== 'all' && item.month !== filterMonth) {
       return false;
     }
-    if (filterDisease !== 'all' && item.disease_name !== filterDisease) {
+    // 2. Bệnh
+    if (
+      filterDisease !== 'all' &&
+      (item.disease_name ?? '').trim() !== filterDisease.trim()
+    ) {
       return false;
     }
-    if (filterLocation !== 'all' && item.location !== filterLocation) {
+    // 3. Khu vực
+    if (
+      filterLocation !== 'all' &&
+      (item.location ?? '').trim() !== filterLocation.trim()
+    ) {
       return false;
     }
     return true;
@@ -228,8 +240,8 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
                 Tháng
               </span>
               <select
-                value={filterMonth}
-                onChange={(e) => setFilterMonth(e.target.value)}
+                value={tempMonth}
+                onChange={(e) => setTempMonth(e.target.value)}
                 className="w-full h-9 px-3 rounded-lg border border-neutral-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
               >
                 <option value="latest">Tháng gần nhất ({latestMonth || '—'})</option>
@@ -247,8 +259,8 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
                 Bệnh
               </span>
               <select
-                value={filterDisease}
-                onChange={(e) => setFilterDisease(e.target.value)}
+                value={tempDisease}
+                onChange={(e) => setTempDisease(e.target.value)}
                 className="w-full h-9 px-3 rounded-lg border border-neutral-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
               >
                 <option value="all">Tất cả bệnh</option>
@@ -265,8 +277,8 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
                 Tỉnh/Thành
               </span>
               <select
-                value={filterLocation}
-                onChange={(e) => setFilterLocation(e.target.value)}
+                value={tempLocation}
+                onChange={(e) => setTempLocation(e.target.value)}
                 className="w-full h-9 px-3 rounded-lg border border-neutral-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
               >
                 <option value="all">Tất cả khu vực</option>
@@ -279,19 +291,41 @@ export default function RecentMonthDataTable({ currentMonth, currentYear }: Prop
             </label>
           </div>
 
-          {(filterMonth !== 'latest' || filterDisease !== 'all' || filterLocation !== 'all') && (
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => {
-                setFilterMonth('latest');
-                setFilterDisease('all');
-                setFilterLocation('all');
+                setFilterMonth(tempMonth);
+                setFilterDisease(tempDisease);
+                setFilterLocation(tempLocation);
               }}
-              className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700"
             >
-              Đặt lại bộ lọc
+              <Filter className="w-3.5 h-3.5" />
+              Lọc
             </button>
-          )}
+            {(tempMonth !== 'latest' ||
+              tempDisease !== 'all' ||
+              tempLocation !== 'all' ||
+              filterMonth !== 'latest' ||
+              filterDisease !== 'all' ||
+              filterLocation !== 'all') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setTempMonth('latest');
+                  setTempDisease('all');
+                  setTempLocation('all');
+                  setFilterMonth('latest');
+                  setFilterDisease('all');
+                  setFilterLocation('all');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-neutral-200 rounded-lg text-xs text-neutral-600 hover:bg-white"
+              >
+                Đặt lại bộ lọc
+              </button>
+            )}
+          </div>
         </div>
       )}
 

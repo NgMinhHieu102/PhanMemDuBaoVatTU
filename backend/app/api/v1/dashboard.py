@@ -131,6 +131,87 @@ def _stock_risk_level(current_stock: int, safety_stock: int) -> str:
     return "safe"
 
 
+def _severity_from_shortage(current_stock: int, safety_stock: int) -> Optional[str]:
+    """Tính mức độ cảnh báo dựa trên tồn kho thực tế.
+
+    Trả về None khi tồn kho đã đủ (>= định mức an toàn) — tức là không còn
+    thiếu hụt và alert nên được tự động đóng (resolved).
+    """
+    if current_stock >= safety_stock:
+        return None  # đủ hàng → không còn cảnh báo
+    shortage = safety_stock - current_stock
+    if current_stock <= 0:
+        return "critical"
+    if safety_stock > 0 and shortage > safety_stock * 0.5:
+        return "high"
+    if safety_stock > 0 and shortage > safety_stock * 0.2:
+        return "medium"
+    return "low"
+
+
+def _sync_alerts_with_inventory(db: Session) -> None:
+    """Đồng bộ các cảnh báo thiếu hụt với tồn kho thực tế (real-time).
+
+    Với mỗi alert thiếu hụt chưa giải quyết:
+    - Lấy tồn kho hiện tại + định mức an toàn mới nhất từ bảng Inventory
+      (gộp theo supply_id phòng trường hợp nhiều dòng kho / lô).
+    - Nếu kho đã đủ → tự động đánh dấu resolved.
+    - Nếu vẫn thiếu → cập nhật lại current_stock, required_stock và severity
+      để Dashboard hiển thị đúng số liệu hiện tại.
+
+    Commit chỉ khi có thay đổi để tránh ghi DB thừa.
+    """
+    open_alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.is_resolved == False,  # noqa: E712
+            Alert.alert_type == "shortage",
+        )
+        .all()
+    )
+    if not open_alerts:
+        return
+
+    # Tồn kho thực tế gộp theo supply_id
+    stock_rows = (
+        db.query(
+            Inventory.supply_id.label("supply_id"),
+            func.coalesce(func.sum(Inventory.current_stock), 0).label("current_stock"),
+            func.coalesce(func.max(Inventory.safety_stock), 0).label("safety_stock"),
+        )
+        .group_by(Inventory.supply_id)
+        .all()
+    )
+    stock_map = {
+        row.supply_id: (int(row.current_stock), int(row.safety_stock))
+        for row in stock_rows
+    }
+
+    changed = False
+    for alert in open_alerts:
+        current_stock, safety_stock = stock_map.get(alert.supply_id, (0, 0))
+        new_severity = _severity_from_shortage(current_stock, safety_stock)
+
+        if new_severity is None:
+            # Kho đã đủ → đóng cảnh báo
+            alert.is_resolved = True
+            changed = True
+            continue
+
+        if (
+            alert.current_stock != current_stock
+            or alert.required_stock != safety_stock
+            or alert.severity != new_severity
+        ):
+            alert.current_stock = current_stock
+            alert.required_stock = safety_stock
+            alert.severity = new_severity
+            changed = True
+
+    if changed:
+        db.commit()
+
+
 def _enrich_alert(alert: Alert) -> Dict:
     """Serialize an Alert ORM object to a plain dict for JSON serialisation."""
     return {
@@ -457,6 +538,7 @@ async def get_risk_status(
 @router.get("/critical-alerts")
 async def get_critical_alerts_dashboard(
     limit: int = Query(10, ge=1, le=50, description="Maximum number of alerts to return"),
+    refresh: bool = Query(False, description="Bỏ qua cache, tính lại từ dữ liệu mới nhất"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Dict:
@@ -469,18 +551,25 @@ async def get_critical_alerts_dashboard(
     Query Params
     ------------
     limit : number of alerts to return (default 10, max 50)
+    refresh : khi True sẽ bỏ qua cache để lấy số liệu real-time
     """
     cache_key = f"dashboard:critical-alerts:{limit}"
-    cached = _cache_get(cache_key)
-    if cached:
-        logger.debug("Cache hit: %s", cache_key)
-        return cached
+    if not refresh:
+        cached = _cache_get(cache_key)
+        if cached:
+            logger.debug("Cache hit: %s", cache_key)
+            return cached
 
     logger.info(
         "Building critical-alerts dashboard for user=%s limit=%d",
         current_user.username,
         limit,
     )
+
+    # Đồng bộ alert với tồn kho thực tế trước khi trả về, để con số luôn
+    # phản ánh đúng kho hiện tại (auto-resolve khi đã đủ hàng, cập nhật
+    # severity / current_stock / required_stock theo Inventory mới nhất).
+    _sync_alerts_with_inventory(db)
 
     # Fetch critical + high alerts in a single query with eager supply join
     alerts = (

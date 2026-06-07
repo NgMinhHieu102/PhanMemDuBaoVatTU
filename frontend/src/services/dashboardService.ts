@@ -49,11 +49,11 @@ export const dashboardService = {
     return response.data;
   },
 
-  async getCriticalAlerts(limit = 5): Promise<DashboardCriticalAlert[]> {
+  async getCriticalAlerts(limit = 5, refresh = false): Promise<DashboardCriticalAlert[]> {
     const response = await api.get<{ alerts: DashboardCriticalAlert[] }>(
       '/dashboard/critical-alerts',
       {
-        params: { limit },
+        params: { limit, ...(refresh ? { refresh: true } : {}) },
       },
     );
     // Backend trả về { alerts: [...], total_returned, severity_summary }

@@ -9,6 +9,7 @@ import {
   Download,
   Loader2,
   RefreshCw,
+  Check,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -40,18 +41,38 @@ export default function Dashboard() {
   const { setPageTitle } = useUIStore();
   const navigate = useNavigate();
   const [exporting, setExporting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
 
   const { data: summary, isLoading: loadingSummary, dataUpdatedAt, refetch: refetchSummary } = useDashboardSummary();
   const { data: trend, isLoading: loadingTrend, refetch: refetchTrend } = useCaseTrend(6);
   const { data: demand, isLoading: loadingDemand, refetch: refetchDemand } = useDemandVsStock(5);
   const { data: alerts, isLoading: loadingAlerts, refetch: refetchAlerts } = useDashboardCriticalAlerts(5);
 
-  const handleRefresh = () => {
-    refetchSummary();
-    refetchTrend();
-    refetchDemand();
-    refetchAlerts();
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    try {
+      setRefreshing(true);
+      await Promise.all([
+        refetchSummary(),
+        refetchTrend(),
+        refetchDemand(),
+        refetchAlerts(),
+      ]);
+      setRefreshedAt(Date.now());
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setRefreshing(false);
+    }
   };
+
+  // Tự ẩn thông báo "đã cập nhật" sau vài giây
+  useEffect(() => {
+    if (refreshedAt === null) return;
+    const timer = setTimeout(() => setRefreshedAt(null), 2500);
+    return () => clearTimeout(timer);
+  }, [refreshedAt]);
 
   useEffect(() => {
     setPageTitle('Dashboard Tổng quan');
@@ -103,14 +124,21 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {refreshedAt !== null && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-green-50 border border-green-100 rounded-lg text-sm font-medium text-green-700 transition-opacity">
+              <Check className="w-4 h-4" />
+              Đã cập nhật
+            </span>
+          )}
           <button
             type="button"
             onClick={handleRefresh}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-200 rounded-xl text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-200 rounded-xl text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-60 disabled:cursor-not-allowed"
             title="Làm mới dữ liệu"
           >
-            <RefreshCw className="w-4 h-4" />
-            Làm mới
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Đang tải...' : 'Làm mới'}
           </button>
           <button
             type="button"

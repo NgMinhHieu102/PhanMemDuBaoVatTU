@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { dashboardService } from '../services/dashboardService';
 import { DASHBOARD_REFRESH_INTERVAL_MS } from '../utils/constants';
 import { useAuthStore } from '../store/authStore';
@@ -47,9 +48,16 @@ export function useDemandVsStock(topN = 5) {
 
 export function useDashboardCriticalAlerts(limit = 5) {
   const { isAuthenticated } = useAuthStore();
-  return useQuery({
+  // Lần fetch đầu (mount/auto) dùng cache; các lần refetch thủ công sẽ
+  // bỏ qua cache để lấy số liệu tồn kho real-time.
+  const manualRefresh = useRef(false);
+  const query = useQuery({
     queryKey: ['dashboard', 'critical-alerts', limit],
-    queryFn: () => dashboardService.getCriticalAlerts(limit),
+    queryFn: async () => {
+      const useRefresh = manualRefresh.current;
+      manualRefresh.current = false;
+      return dashboardService.getCriticalAlerts(limit, useRefresh);
+    },
     refetchInterval: isAuthenticated ? DASHBOARD_REFRESH_INTERVAL_MS : false,
     staleTime: DASHBOARD_REFRESH_INTERVAL_MS,
     enabled: isAuthenticated,
@@ -57,4 +65,12 @@ export function useDashboardCriticalAlerts(limit = 5) {
     refetchOnWindowFocus: true,
     refetchOnMount: 'always',
   });
+
+  // refetch() bọc lại để đánh dấu lần gọi tiếp theo là refresh thủ công
+  const refetch = (...args: Parameters<typeof query.refetch>) => {
+    manualRefresh.current = true;
+    return query.refetch(...args);
+  };
+
+  return { ...query, refetch };
 }

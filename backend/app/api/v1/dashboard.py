@@ -801,43 +801,37 @@ async def get_demand_vs_stock(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> List[Dict]:
-    """Top N vật tư có nhu cầu cao nhất, kèm tồn kho hiện tại."""
+    """Top N vật tư có nhu cầu cao nhất, kèm tồn kho hiện tại.
+
+    Lấy cùng nguồn dữ liệu với trang Đề xuất nhập kho (/alerts):
+    dùng SupplyRecommendationService.calculate_for_month cho tháng hiện tại
+    (đã nhân buffer 15%). Sắp xếp theo predicted_need_total giảm dần.
+    """
+    from app.services.supply_recommendation_service import SupplyRecommendationService
+
     today = date.today()
-    end = today + timedelta(days=60)
+    forecast_month = today.replace(day=1)
 
-    rows = (
-        db.query(
-            MedicalSupply.id,
-            MedicalSupply.name,
-            MedicalSupply.unit,
-            func.coalesce(func.sum(SupplyRequirement.required_quantity), 0).label("demand"),
-        )
-        .join(SupplyRequirement, SupplyRequirement.supply_id == MedicalSupply.id)
-        .filter(
-            SupplyRequirement.requirement_date >= today,
-            SupplyRequirement.requirement_date <= end,
-        )
-        .group_by(MedicalSupply.id, MedicalSupply.name, MedicalSupply.unit)
-        .order_by(func.sum(SupplyRequirement.required_quantity).desc())
-        .limit(top_n)
-        .all()
-    )
+    service = SupplyRecommendationService(db)
+    try:
+        agg = service.calculate_for_month(forecast_month=forecast_month)
+    except Exception as exc:  # noqa: BLE001 — service nuốt lỗi từng bệnh nên hiếm khi ra
+        logger.warning("demand-vs-stock fallback do lỗi tính nhu cầu: %s", exc)
+        return []
 
-    result: list[dict] = []
-    for row in rows:
-        stock = (
-            db.query(func.coalesce(func.sum(Inventory.current_stock), 0))
-            .filter(Inventory.supply_id == row.id)
-            .scalar()
-            or 0
-        )
-        result.append(
-            {
-                "supply_id": row.id,
-                "supply_name": row.name,
-                "unit": row.unit,
-                "demand": int(row.demand),
-                "stock": int(stock),
-            }
-        )
-    return result
+    items = sorted(
+        agg.get("items", []),
+        key=lambda x: x.get("predicted_need_total", 0),
+        reverse=True,
+    )[:top_n]
+
+    return [
+        {
+            "supply_id": it["supply_id"],
+            "supply_name": it.get("ten_hoat_chat") or it.get("supply_code"),
+            "unit": it.get("unit"),
+            "demand": int(it.get("predicted_need_total", 0)),
+            "stock": int(it.get("current_stock", 0)),
+        }
+        for it in items
+    ]

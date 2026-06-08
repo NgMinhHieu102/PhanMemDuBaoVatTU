@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, Loader2 } from 'lucide-react';
+import { Save, Loader2, Search } from 'lucide-react';
 
 import {
   adminSeverityService,
@@ -32,6 +32,9 @@ export default function SupplyNormSection() {
   // Phân trang
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  // Tìm kiếm
+  const [search, setSearch] = useState('');
 
   const { data, isLoading, refetch } = useQuery<NormMatrix>({
     queryKey: ['admin', 'supply-norms', selectedDisease],
@@ -137,10 +140,24 @@ export default function SupplyNormSection() {
 
   // Phân trang
   const supplies = data?.supplies || [];
-  const totalPages = Math.ceil(supplies.length / itemsPerPage);
+  const filteredSupplies = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return supplies;
+    return supplies.filter((s) => {
+      const haystack = `${s.supply_code} ${s.drug_code ?? ''} ${s.ten_hoat_chat} ${s.group_name ?? ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [supplies, search]);
+
+  const totalPages = Math.ceil(filteredSupplies.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
-  const paginatedSupplies = supplies.slice(startIndex, endIndex);
+  const paginatedSupplies = filteredSupplies.slice(startIndex, endIndex);
+
+  // Reset page khi đổi từ khoá tìm kiếm
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search]);
 
   return (
     <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden">
@@ -192,6 +209,20 @@ export default function SupplyNormSection() {
         </div>
       )}
 
+      {/* Thanh tìm kiếm thuốc */}
+      <div className="px-5 py-3 border-b border-neutral-100 bg-neutral-50/50">
+        <div className="relative max-w-md">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Tìm theo mã, tên hoạt chất, nhóm..."
+            className="w-full h-10 pl-9 pr-3 rounded-lg border border-neutral-200 bg-white text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
+          />
+        </div>
+      </div>
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-neutral-50 border-b border-neutral-100">
@@ -216,6 +247,15 @@ export default function SupplyNormSection() {
               <tr>
                 <td colSpan={7} className="text-center py-8 text-neutral-500">
                   Đang tải...
+                </td>
+              </tr>
+            )}
+            {!isLoading && paginatedSupplies.length === 0 && (
+              <tr>
+                <td colSpan={7} className="text-center py-8 text-neutral-500">
+                  {search.trim()
+                    ? 'Không tìm thấy thuốc/vật tư phù hợp.'
+                    : 'Không có dữ liệu.'}
                 </td>
               </tr>
             )}
@@ -300,10 +340,13 @@ export default function SupplyNormSection() {
       </div>
 
       {/* Footer phân trang */}
-      {supplies.length > 0 && (
+      {filteredSupplies.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-t border-neutral-100 text-sm text-neutral-500">
           <span className="text-xs">
-            Hiển thị {startIndex + 1}-{Math.min(endIndex, supplies.length)} trong số {supplies.length} thuốc/vật tư
+            Hiển thị {startIndex + 1}-{Math.min(endIndex, filteredSupplies.length)} trong số {filteredSupplies.length} thuốc/vật tư
+            {search.trim() && supplies.length !== filteredSupplies.length && (
+              <span className="text-neutral-400"> (đã lọc từ {supplies.length})</span>
+            )}
           </span>
           
           {totalPages > 1 && (

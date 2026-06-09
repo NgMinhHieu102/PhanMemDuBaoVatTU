@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -1097,10 +1097,17 @@ async def _build_dashboard_summary_data(db: Session) -> Dict:
         if total_current > 0 else 0.0
     )
 
-    # KPI: số vật tư thiếu hụt
+    # KPI: số vật tư thiếu hụt (đồng bộ với logic "Cần nhập gấp" ở UI Inventory):
+    #   chỉ tính vật tư đã có ngưỡng AT > 0 và tồn quá thấp.
     shortage_count = (
-        db.query(func.count(Alert.id))
-        .filter(Alert.is_resolved == False)  # noqa: E712
+        db.query(func.count(Inventory.id))
+        .filter(
+            Inventory.safety_stock > 0,
+            or_(
+                Inventory.current_stock <= 0,
+                Inventory.current_stock < Inventory.safety_stock * 0.3,
+            ),
+        )
         .scalar()
         or 0
     )

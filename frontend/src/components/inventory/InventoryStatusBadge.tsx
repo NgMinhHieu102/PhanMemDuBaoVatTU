@@ -50,10 +50,16 @@ export function classifyStatus(
   currentStock: number,
   safetyStock: number,
 ): InventoryStatus {
+  // Chưa thiết lập ngưỡng AT (= 0) → coi như chưa quản lý ngưỡng,
+  // không đánh dấu nguy hiểm. Logic này khớp với /alerts: khi
+  // safety_stock = 0 và không có nhu cầu dự báo thì suggested_import = 0,
+  // tức không cần nhập.
+  if (safetyStock <= 0) return 'normal';
+
+  // Có AT mà tồn = 0 hoặc dưới 30% AT → cần nhập gấp.
   if (currentStock <= 0) return 'critical';
-  // Spec 6.4: tồn kho quá thấp hoặc bằng 0 → cần nhập gấp.
-  // Quy ước "quá thấp" = dưới 30% ngưỡng an toàn.
-  if (safetyStock > 0 && currentStock < safetyStock * 0.3) return 'critical';
+  if (currentStock < safetyStock * 0.3) return 'critical';
+  // Tồn dưới ngưỡng nhưng chưa nguy hiểm.
   if (currentStock <= safetyStock) return 'low';
   return 'normal';
 }

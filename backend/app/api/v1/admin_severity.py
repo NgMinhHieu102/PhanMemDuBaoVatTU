@@ -199,6 +199,68 @@ def list_supply_norms(
     ]
 
 
+@router.get("/supply-norms/by-severity")
+def get_norms_by_severity(
+    icd_code: Optional[str] = Query(None, description="Lọc theo bệnh"),
+    severity: Optional[str] = Query(None, description="Lọc theo mức độ (mild/moderate/severe)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Lấy định mức thuốc vật tư lọc theo cấp độ.
+    
+    Trả về danh sách định mức với thông tin chi tiết:
+    [
+        {
+            "icd_code": "J20",
+            "disease_name": "Viêm phế quản cấp",
+            "severity": "mild",
+            "supply_id": 1,
+            "supply_code": "VT001",
+            "ten_hoat_chat": "Paracetamol",
+            "unit": "Viên",
+            "quantity_per_case": 6
+        },
+        ...
+    ]
+    """
+    q = db.query(DiseaseSupplyNorm, MedicalSupply).join(
+        MedicalSupply, MedicalSupply.id == DiseaseSupplyNorm.supply_id
+    )
+    
+    if icd_code:
+        q = q.filter(DiseaseSupplyNorm.icd_code == icd_code)
+    if severity:
+        if severity not in {"mild", "moderate", "severe"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="severity phải là: mild, moderate, severe"
+            )
+        q = q.filter(DiseaseSupplyNorm.severity == severity)
+    
+    q = q.order_by(
+        DiseaseSupplyNorm.icd_code,
+        DiseaseSupplyNorm.severity,
+        MedicalSupply.supply_code
+    )
+    rows = q.all()
+    
+    return [
+        {
+            "icd_code": norm.icd_code,
+            "disease_name": norm.disease_name,
+            "severity": norm.severity,
+            "supply_id": norm.supply_id,
+            "supply_code": supply.supply_code,
+            "drug_code": supply.drug_code,
+            "ten_hoat_chat": supply.ten_hoat_chat,
+            "unit": supply.unit,
+            "group_name": supply.group_name,
+            "quantity_per_case": norm.quantity_per_case,
+        }
+        for norm, supply in rows
+    ]
+
+
 @router.get("/supply-norms/matrix")
 def get_norm_matrix(
     icd_code: str = Query(..., description="Mã ICD bệnh"),
@@ -211,24 +273,29 @@ def get_norm_matrix(
     {
         "icd_code": "J20",
         "disease_name": "...",
+        "severity_rate": { "mild_rate": 70, "moderate_rate": 25, "severe_rate": 5 },
         "supplies": [
             {
                 "supply_id": 1,
                 "supply_code": "VT001",
+                "drug_code": "...",
                 "ten_hoat_chat": "Paracetamol",
                 "unit": "Viên",
-                "mild": 6, "moderate": 10, "severe": 12
+                "group_name": "Hạ sốt",
+                "mild": 6,
+                "moderate": 10,
+                "severe": 12
             },
             ...
         ]
     }
     """
-    severity = (
+    severity_rate = (
         db.query(SeverityRate)
         .filter(SeverityRate.icd_code == icd_code)
         .first()
     )
-    if not severity:
+    if not severity_rate:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Không tìm thấy bệnh {icd_code}",
@@ -262,8 +329,13 @@ def get_norm_matrix(
         })
 
     return {
-        "icd_code": severity.icd_code,
-        "disease_name": severity.disease_name,
+        "icd_code": severity_rate.icd_code,
+        "disease_name": severity_rate.disease_name,
+        "severity_rate": {
+            "mild_rate": float(severity_rate.mild_rate),
+            "moderate_rate": float(severity_rate.moderate_rate),
+            "severe_rate": float(severity_rate.severe_rate),
+        },
         "supplies": supplies,
     }
 
@@ -436,6 +508,70 @@ def delete_norm(
     db.delete(norm)
     db.commit()
     return {"id": norm_id, "deleted": True}
+
+
+@router.get("/supply-norms/summary/all-diseases")
+def get_norms_summary_all(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Tóm tắt định mức cho tất cả 4 bệnh (ma trận tổng quát).
+    
+    Trả về:
+    {
+        "diseases": [
+            {
+                "icd_code": "J20",
+                "disease_name": "Viêm phế quản cấp",
+                "severity_rate": { "mild_rate": 70, "moderate_rate": 25, "severe_rate": 5 },
+                "supply_count": 15,
+                "norms_count": { "mild": 15, "moderate": 15, "severe": 15 }
+            },
+            ...
+        ]
+    }
+    """
+    all_diseases = db.query(SeverityRate).order_by(SeverityRate.icd_code).all()
+    
+    diseases = []
+    for disease in all_diseases:
+        # Đếm số norms theo severity
+        norms_by_severity = {}
+        for sev in ["mild", "moderate", "severe"]:
+            count = (
+                db.query(DiseaseSupplyNorm)
+                .filter(
+                    DiseaseSupplyNorm.icd_code == disease.icd_code,
+                    DiseaseSupplyNorm.severity == sev,
+                )
+                .count()
+            )
+            norms_by_severity[sev] = count
+        
+        # Tổng số norms
+        total_norms = (
+            db.query(DiseaseSupplyNorm)
+            .filter(DiseaseSupplyNorm.icd_code == disease.icd_code)
+            .count()
+        )
+        
+        diseases.append({
+            "icd_code": disease.icd_code,
+            "disease_name": disease.disease_name,
+            "severity_rate": {
+                "mild_rate": float(disease.mild_rate),
+                "moderate_rate": float(disease.moderate_rate),
+                "severe_rate": float(disease.severe_rate),
+            },
+            "total_supplies": 15,  # Số lượng thuốc tối đa
+            "total_norms": total_norms,
+            "norms_by_severity": norms_by_severity,
+        })
+    
+    return {
+        "total_diseases": len(diseases),
+        "diseases": diseases,
+    }
 
 
 

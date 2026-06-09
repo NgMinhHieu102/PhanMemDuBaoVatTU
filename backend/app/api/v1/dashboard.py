@@ -24,8 +24,8 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
@@ -213,7 +213,11 @@ def _sync_alerts_with_inventory(db: Session) -> None:
 
 
 def _enrich_alert(alert: Alert) -> Dict:
-    """Serialize an Alert ORM object to a plain dict for JSON serialisation."""
+    """Serialize an Alert ORM object to a plain dict for JSON serialisation.
+
+    Hiện tại không còn endpoint nào dùng (critical-alerts đã chuyển sang
+    đọc thẳng từ Inventory). Giữ lại helper để có thể tái dùng.
+    """
     return {
         "id": alert.id,
         "supply_id": alert.supply_id,
@@ -543,15 +547,15 @@ async def get_critical_alerts_dashboard(
     current_user: User = Depends(get_current_user),
 ) -> Dict:
     """
-    Return the top unresolved critical and high-severity alerts for the dashboard.
+    Trả về danh sách vật tư đang thiếu hụt cho dashboard.
 
-    Alerts are ordered by severity (critical first) then by creation date
-    (newest first), so the most urgent items always appear at the top.
-
-    Query Params
-    ------------
-    limit : number of alerts to return (default 10, max 50)
-    refresh : khi True sẽ bỏ qua cache để lấy số liệu real-time
+    Nguồn dữ liệu lấy thẳng từ bảng Inventory + MedicalSupply, dùng cùng
+    quy tắc với /inventory ở UI:
+      - "critical" (Nguy hiểm) : safety_stock > 0 và (current_stock <= 0
+                                  hoặc current_stock < 30% safety_stock)
+      - "high" (Cần nhập)      : safety_stock > 0 và current_stock < safety_stock
+                                  (nhưng chưa critical)
+    Chỉ trả về 2 mức trên, sắp xếp theo mức độ nguy hiểm giảm dần.
     """
     cache_key = f"dashboard:critical-alerts:{limit}"
     if not refresh:
@@ -566,46 +570,69 @@ async def get_critical_alerts_dashboard(
         limit,
     )
 
-    # Đồng bộ alert với tồn kho thực tế trước khi trả về, để con số luôn
-    # phản ánh đúng kho hiện tại (auto-resolve khi đã đủ hàng, cập nhật
-    # severity / current_stock / required_stock theo Inventory mới nhất).
+    # Đồng bộ trạng thái bảng Alert với tồn kho thực tế (auto-resolve / cập nhật
+    # severity). Giữ lại để các nơi khác đang dùng bảng Alert vẫn nhất quán.
     _sync_alerts_with_inventory(db)
 
-    # Fetch critical + high alerts in a single query with eager supply join
-    alerts = (
-        db.query(Alert)
-        .options(joinedload(Alert.supply))
+    # Lấy toàn bộ kho có safety_stock > 0 và current_stock dưới ngưỡng
+    rows = (
+        db.query(
+            Inventory.id.label("inv_id"),
+            Inventory.supply_id.label("supply_id"),
+            Inventory.current_stock.label("current_stock"),
+            Inventory.safety_stock.label("safety_stock"),
+            MedicalSupply.name.label("supply_name"),
+        )
+        .join(MedicalSupply, Inventory.supply_id == MedicalSupply.id)
         .filter(
-            Alert.is_resolved == False,  # noqa: E712
-            Alert.severity.in_(["critical", "high"]),
+            Inventory.safety_stock > 0,
+            Inventory.current_stock < Inventory.safety_stock,
         )
-        .order_by(
-            # critical before high
-            Alert.severity.asc(),
-            Alert.created_at.desc(),
-        )
-        .limit(limit)
         .all()
     )
 
-    # Also fetch counts for all severity levels (unresolved)
-    severity_counts = (
-        db.query(Alert.severity, func.count(Alert.id).label("cnt"))
-        .filter(Alert.is_resolved == False)  # noqa: E712
-        .group_by(Alert.severity)
-        .all()
-    )
-    counts_map = {row.severity: row.cnt for row in severity_counts}
+    items: List[Dict] = []
+    for row in rows:
+        cs = int(row.current_stock or 0)
+        ss = int(row.safety_stock or 0)
+        if cs <= 0 or cs < ss * 0.3:
+            severity = "critical"
+        else:
+            severity = "high"
+        items.append(
+            {
+                "id": row.inv_id,
+                "supply_id": row.supply_id,
+                "supply_name": row.supply_name,
+                "alert_type": "low_stock",
+                "severity": severity,
+                "current_stock": cs,
+                "required_stock": ss,
+                "shortage_date": None,
+                "message": None,
+                "is_resolved": False,
+                "created_at": None,
+            }
+        )
+
+    # Sắp xếp giống thứ tự trên trang /inventory: critical trước high,
+    # trong cùng nhóm thì theo id tăng dần (đúng thứ tự bảng danh sách kho).
+    severity_rank = {"critical": 0, "high": 1}
+    items.sort(key=lambda x: (severity_rank.get(x["severity"], 9), x["id"]))
+
+    # Đếm số mục theo từng mức độ
+    counts = {"critical": 0, "high": 0, "medium": 0}
+    for it in items:
+        counts[it["severity"]] = counts.get(it["severity"], 0) + 1
+
+    # Áp limit
+    alerts = items[:limit]
 
     result = {
-        "alerts": [_enrich_alert(a) for a in alerts],
+        "alerts": alerts,
         "total_returned": len(alerts),
         "limit": limit,
-        "severity_summary": {
-            "critical": counts_map.get("critical", 0),
-            "high": counts_map.get("high", 0),
-            "medium": counts_map.get("medium", 0),
-        },
+        "severity_summary": counts,
     }
 
     _cache_set(cache_key, result)
@@ -692,10 +719,18 @@ async def get_dashboard_summary(
         predicted_next = 0
         predicted_trend_pct = 0.0
 
-    # 3. Số vật tư thiếu hụt (alerts chưa xử lý)
+    # 3. Số vật tư thiếu hụt (đồng bộ với logic "Cần nhập gấp" ở UI Inventory):
+    #    Chỉ tính các vật tư đã có ngưỡng AT > 0 (đang được theo dõi).
+    #    Trong số đó, "nguy hiểm" khi tồn <= 0 hoặc tồn < 30% AT.
     shortage_count = (
-        db.query(func.count(Alert.id))
-        .filter(Alert.is_resolved == False)  # noqa: E712
+        db.query(func.count(Inventory.id))
+        .filter(
+            Inventory.safety_stock > 0,
+            or_(
+                Inventory.current_stock <= 0,
+                Inventory.current_stock < Inventory.safety_stock * 0.3,
+            ),
+        )
         .scalar()
         or 0
     )
@@ -766,43 +801,37 @@ async def get_demand_vs_stock(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> List[Dict]:
-    """Top N vật tư có nhu cầu cao nhất, kèm tồn kho hiện tại."""
+    """Top N vật tư có nhu cầu cao nhất, kèm tồn kho hiện tại.
+
+    Lấy cùng nguồn dữ liệu với trang Đề xuất nhập kho (/alerts):
+    dùng SupplyRecommendationService.calculate_for_month cho tháng hiện tại
+    (đã nhân buffer 15%). Sắp xếp theo predicted_need_total giảm dần.
+    """
+    from app.services.supply_recommendation_service import SupplyRecommendationService
+
     today = date.today()
-    end = today + timedelta(days=60)
+    forecast_month = today.replace(day=1)
 
-    rows = (
-        db.query(
-            MedicalSupply.id,
-            MedicalSupply.name,
-            MedicalSupply.unit,
-            func.coalesce(func.sum(SupplyRequirement.required_quantity), 0).label("demand"),
-        )
-        .join(SupplyRequirement, SupplyRequirement.supply_id == MedicalSupply.id)
-        .filter(
-            SupplyRequirement.requirement_date >= today,
-            SupplyRequirement.requirement_date <= end,
-        )
-        .group_by(MedicalSupply.id, MedicalSupply.name, MedicalSupply.unit)
-        .order_by(func.sum(SupplyRequirement.required_quantity).desc())
-        .limit(top_n)
-        .all()
-    )
+    service = SupplyRecommendationService(db)
+    try:
+        agg = service.calculate_for_month(forecast_month=forecast_month)
+    except Exception as exc:  # noqa: BLE001 — service nuốt lỗi từng bệnh nên hiếm khi ra
+        logger.warning("demand-vs-stock fallback do lỗi tính nhu cầu: %s", exc)
+        return []
 
-    result: list[dict] = []
-    for row in rows:
-        stock = (
-            db.query(func.coalesce(func.sum(Inventory.current_stock), 0))
-            .filter(Inventory.supply_id == row.id)
-            .scalar()
-            or 0
-        )
-        result.append(
-            {
-                "supply_id": row.id,
-                "supply_name": row.name,
-                "unit": row.unit,
-                "demand": int(row.demand),
-                "stock": int(stock),
-            }
-        )
-    return result
+    items = sorted(
+        agg.get("items", []),
+        key=lambda x: x.get("predicted_need_total", 0),
+        reverse=True,
+    )[:top_n]
+
+    return [
+        {
+            "supply_id": it["supply_id"],
+            "supply_name": it.get("ten_hoat_chat") or it.get("supply_code"),
+            "unit": it.get("unit"),
+            "demand": int(it.get("predicted_need_total", 0)),
+            "stock": int(it.get("current_stock", 0)),
+        }
+        for it in items
+    ]

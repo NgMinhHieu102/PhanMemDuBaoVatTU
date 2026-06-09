@@ -12,8 +12,17 @@ import InventoryTable, {
   type InventoryRow,
 } from '../components/inventory/InventoryTable';
 import { classifyStatus } from '../components/inventory/InventoryStatusBadge';
+import { adminSeverityService, type SupplyNormCell } from '../services/adminSeverityService';
 
 const PAGE_SIZE = 10;
+
+const DISEASES = [
+  { value: '', label: 'Tất cả' },
+  { value: 'J20', label: 'J20 - Viêm phế quản cấp' },
+  { value: 'J06', label: 'J06 - Viêm đường hô hấp cấp khác' },
+  { value: 'J02', label: 'J02 - Viêm họng cấp' },
+  { value: 'J01', label: 'J01 - Viêm xoang cấp' },
+];
 
 /** Module 6 — Quản lý Vật tư Y tế & Kho vận */
 export default function Inventory() {
@@ -23,14 +32,22 @@ export default function Inventory() {
     setPageTitle('Quản lý vật tư y tế & Kho vận');
   }, [setPageTitle]);
 
+  return <InventoryContent />;
+}
+
+/**
+ * Main inventory content (extracted to component for cleaner code)
+ */
+function InventoryContent() {
   const [filters, setFilters] = useState<InventoryFilters>({
     search: '',
     category: 'all',
     status: 'all',
+    disease: '',
+    level: 'all',
   });
   const [page, setPage] = useState(1);
-
-  // Action states
+  const [normMap, setNormMap] = useState<Map<string, SupplyNormCell>>(new Map());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -55,11 +72,31 @@ export default function Inventory() {
 
   const { data: inventory = [], isLoading, refetch } = useInventory({ limit: 2000 });
 
+  // Fetch norm matrix khi đổi bệnh
+  useEffect(() => {
+    if (!filters.disease) {
+      setNormMap(new Map());
+      return;
+    }
+    let cancelled = false;
+    adminSeverityService.getNormMatrix(filters.disease).then((data) => {
+      if (cancelled) return;
+      const map = new Map<string, SupplyNormCell>();
+      data.supplies.forEach((s) => {
+        // Key bằng supply_code để ghép với bảng kho
+        map.set(s.supply_code, s);
+      });
+      setNormMap(map);
+    }).catch(() => {
+      if (!cancelled) setNormMap(new Map());
+    });
+    return () => { cancelled = true; };
+  }, [filters.disease]);
+
   // Map raw inventory → flat row dùng cho bảng
   const allRows: InventoryRow[] = useMemo(() => {
     return inventory.map((item: any, idx: number) => {
       const supply = item.supply ?? {};
-      // Ưu tiên supply_code mới (VT001-VT015), fallback build từ category+id
       const code =
         supply.supply_code ??
         buildSupplyCode(supply.category, item.supply_id ?? item.id ?? idx);
@@ -68,8 +105,9 @@ export default function Inventory() {
         SUPPLY_CATEGORY_LABELS[supply.category] ??
         supply.category ??
         '—';
-      // Tên vật tư: ưu tiên ten_hoat_chat (mới), fallback name (cũ)
       const supplyName = supply.ten_hoat_chat ?? supply.name ?? '—';
+      // Ghép dữ liệu định mức nếu có
+      const norm = normMap.get(code);
       return {
         id: item.id,
         code,
@@ -78,15 +116,17 @@ export default function Inventory() {
         unit: supply.unit ?? '—',
         currentStock: item.current_stock ?? 0,
         safetyStock: item.safety_stock ?? 0,
+        mild: norm?.mild,
+        moderate: norm?.moderate,
+        severe: norm?.severe,
       };
     });
-  }, [inventory]);
+  }, [inventory, normMap]);
 
   // Lấy danh sách category xuất hiện trong dữ liệu
   const categoryOptions = useMemo(() => {
     const unique = new Set<string>();
     inventory.forEach((it: any) => {
-      // Ưu tiên group_name (15 thuốc/vật tư mới), fallback category
       const cat = it.supply?.group_name ?? it.supply?.category;
       if (cat) unique.add(cat);
     });
@@ -109,6 +149,11 @@ export default function Inventory() {
         const status = classifyStatus(r.currentStock, r.safetyStock);
         if (status !== filters.status) return false;
       }
+      // Lọc theo cấp độ: chỉ hiển thị thuốc có định mức > 0 ở cấp độ đang chọn
+      if (filters.level !== 'all') {
+        const val = r[filters.level] ?? 0;
+        if (val <= 0) return false;
+      }
       return true;
     });
   }, [allRows, filters]);
@@ -130,9 +175,9 @@ export default function Inventory() {
   // Reset page khi filter đổi
   useEffect(() => {
     setPage(1);
-  }, [filters.search, filters.category, filters.status]);
+  }, [filters.search, filters.category, filters.status, filters.disease, filters.level]);
 
-  // ── Handlers cho 3 nút header ─────────────────────────────────────────
+  // ── Handlers ─────────────────────────────────────────────────────────────────
   const handleDownloadTemplate = () => {
     window.open(`${api.defaults.baseURL}/inventory/template`, '_blank');
   };
@@ -193,12 +238,10 @@ export default function Inventory() {
     }
   };
 
-  // ── Handler cho Edit ─────────────────────────────────────────
   const handleEdit = (row: InventoryRow) => {
     setEditingItem(row);
   };
 
-  // ── Handler cho Delete ─────────────────────────────────────────
   const handleDelete = (row: InventoryRow) => {
     setDeletingItem(row);
   };
@@ -217,7 +260,6 @@ export default function Inventory() {
     }
   };
 
-  // ── Handler cho Sync Safety Stock ─────────────────────────────────────────
   const handleSyncSafetyStock = async () => {
     if (syncingSafety) return;
     const confirm = window.confirm(
@@ -230,7 +272,7 @@ export default function Inventory() {
       setSyncingSafety(true);
       const res = await api.post('/inventory/sync-safety-stock', null, {
         params: {
-          buffer_rate: 15, // Có thể cho user nhập
+          buffer_rate: 15,
         },
       });
       setSyncResult(res.data);
@@ -334,6 +376,7 @@ export default function Inventory() {
           filters={filters}
           onChange={setFilters}
           categories={categoryOptions}
+          diseases={DISEASES}
         />
         <InventoryTable
           rows={paged}
@@ -344,6 +387,8 @@ export default function Inventory() {
           onPageChange={setPage}
           onEdit={handleEdit}
           onDelete={handleDelete}
+          showSeverity={normMap.size > 0}
+          level={filters.level}
         />
       </div>
 
@@ -615,13 +660,12 @@ function AddSupplyDialog({
     try {
       setSubmitting(true);
       // Step 1: tạo MedicalSupply
-      const supplyRes = await api.post('/supplies/', {
+      await api.post('/supplies/', {
         name: vals.name.trim(),
         category: vals.category,
         unit: vals.unit,
         lead_time_days: vals.lead_time_days || null,
       });
-      const supplyId = supplyRes.data.id;
       // Step 2: tạo Inventory record qua batch-update / inventory direct
       // Ở đây dùng /inventory/import giả lập 1 dòng để có cả expiry_date
       const csv =

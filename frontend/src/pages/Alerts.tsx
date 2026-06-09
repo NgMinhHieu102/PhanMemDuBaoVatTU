@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ShoppingCart, AlertTriangle, CheckCircle2, TrendingUp, Calculator, Save, Loader2 } from 'lucide-react';
+import { ShoppingCart, AlertTriangle, CheckCircle2, TrendingUp, Calculator, Save, Loader2, Search } from 'lucide-react';
 
 import { useUIStore } from '../store/uiStore';
 import {
@@ -32,6 +32,9 @@ export default function Alerts() {
   });
   const [bufferRate, setBufferRate] = useState<number>(15);
   const [selectedDisease, setSelectedDisease] = useState<string>('all');
+  const [search, setSearch] = useState<string>('');
+  const [page, setPage] = useState<number>(1);
+  const PAGE_SIZE = 10;
 
   const monthDate = `${forecastMonth}-01`;
 
@@ -97,6 +100,26 @@ export default function Alerts() {
       ],
     }));
   }, [data, selectedDisease]);
+
+  // Filter theo từ khoá tìm kiếm
+  const searchedItems = useMemo<AggregatedItem[]>(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return filteredItems;
+    return filteredItems.filter((it) => {
+      const haystack = `${it.supply_code} ${it.drug_code ?? ''} ${it.ten_hoat_chat} ${it.group_name ?? ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [filteredItems, search]);
+
+  // Reset page về 1 khi đổi filter / tìm kiếm / dữ liệu
+  useEffect(() => {
+    setPage(1);
+  }, [selectedDisease, search, forecastMonth, bufferRate, data]);
+
+  const totalPages = Math.max(1, Math.ceil(searchedItems.length / PAGE_SIZE));
+  const startIdx = (page - 1) * PAGE_SIZE;
+  const endIdx = startIdx + PAGE_SIZE;
+  const pagedItems = searchedItems.slice(startIdx, endIdx);
 
   // KPIs
   const kpis = useMemo(() => {
@@ -238,13 +261,25 @@ export default function Alerts() {
 
       {/* Main table */}
       <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-neutral-100 flex items-center justify-between">
+        <div className="px-5 py-4 border-b border-neutral-100 flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-base font-semibold text-neutral-900">
             Danh sách thuốc/vật tư
           </h3>
-          <span className="text-xs text-neutral-500">
-            {filteredItems.length} mục
-          </span>
+          <div className="flex items-center gap-3 flex-1 sm:flex-none sm:min-w-[280px] max-w-md">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Tìm theo mã, tên hoạt chất, nhóm..."
+                className="w-full h-9 pl-9 pr-3 rounded-lg border border-neutral-200 bg-white text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
+              />
+            </div>
+            <span className="text-xs text-neutral-500 whitespace-nowrap">
+              {searchedItems.length} mục
+            </span>
+          </div>
         </div>
 
         {isLoading && (
@@ -259,14 +294,15 @@ export default function Alerts() {
           </div>
         )}
 
-        {!isLoading && !error && filteredItems.length === 0 && (
+        {!isLoading && !error && searchedItems.length === 0 && (
           <div className="p-12 text-center text-sm text-neutral-500">
-            Không có dữ liệu cho tháng này. Hãy đảm bảo đã có ca bệnh hoặc dự báo
-            cho tháng {forecastMonth}.
+            {search.trim()
+              ? 'Không tìm thấy thuốc/vật tư phù hợp với từ khoá.'
+              : `Không có dữ liệu cho tháng này. Hãy đảm bảo đã có ca bệnh hoặc dự báo cho tháng ${forecastMonth}.`}
           </div>
         )}
 
-        {!isLoading && filteredItems.length > 0 && (
+        {!isLoading && searchedItems.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -282,7 +318,7 @@ export default function Alerts() {
                 </tr>
               </thead>
               <tbody>
-                {filteredItems.map((it) => (
+                {pagedItems.map((it) => (
                   <tr
                     key={it.supply_id}
                     className="border-b border-neutral-50 hover:bg-neutral-50/60"
@@ -339,9 +375,65 @@ export default function Alerts() {
             </table>
           </div>
         )}
+
+        {!isLoading && searchedItems.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-t border-neutral-100 text-sm text-neutral-600">
+            <span className="text-xs">
+              Hiển thị {startIdx + 1}-{Math.min(endIdx, searchedItems.length)} trong số {searchedItems.length} mục
+            </span>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="px-3 py-1.5 text-xs border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Trước
+                </button>
+                {buildPageList(page, totalPages).map((p, idx) =>
+                  p === 'ellipsis' ? (
+                    <span key={`e-${idx}`} className="w-8 h-8 inline-flex items-center justify-center text-neutral-400">…</span>
+                  ) : (
+                    <button
+                      key={p}
+                      onClick={() => setPage(p)}
+                      className={`w-8 h-8 text-xs rounded-lg ${
+                        page === p
+                          ? 'bg-blue-600 text-white font-medium'
+                          : 'border border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ),
+                )}
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  className="px-3 py-1.5 text-xs border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Sau
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function buildPageList(current: number, total: number): Array<number | 'ellipsis'> {
+  if (total <= 5) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: Array<number | 'ellipsis'> = [];
+  pages.push(1);
+  if (current > 3) pages.push('ellipsis');
+  const startWindow = Math.max(2, current - 1);
+  const endWindow = Math.min(total - 1, current + 1);
+  for (let p = startWindow; p <= endWindow; p++) pages.push(p);
+  if (current < total - 2) pages.push('ellipsis');
+  pages.push(total);
+  return pages;
 }
 
 function KpiCard({

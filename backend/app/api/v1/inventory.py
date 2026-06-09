@@ -138,7 +138,7 @@ async def sync_safety_stock_from_forecast(
     
     Logic:
     1. Lấy kết quả dự báo từ supply_recommendations cho tháng chỉ định
-    2. Tính safety_stock = need_before_buffer × (buffer_rate/100)
+    2. Tính safety_stock = need_before_buffer × (1 + buffer_rate/100)  (= Nhu cầu cuối)
     3. Cập nhật inventory.safety_stock cho các vật tư tương ứng
     
     Returns:
@@ -198,9 +198,7 @@ async def sync_safety_stock_from_forecast(
     from app.models.inventory import Inventory as InventoryModel
 
     for supply_id, need_before_buffer in supply_needs.items():
-        # Ngưỡng AT = nhu cầu (trước dự phòng) × % dự phòng được thiết lập.
-        # Ví dụ: nhu cầu 4938, dự phòng 15% → AT = 741.
-        # AT là phần đệm an toàn, luôn nhỏ hơn "nhu cầu cuối".
+        # Ngưỡng AT = Nhu cầu cuối = nhu cầu trước dự phòng × (1 + % dự phòng).
         inv = (
             db.query(InventoryModel)
             .filter(InventoryModel.supply_id == supply_id)
@@ -210,8 +208,7 @@ async def sync_safety_stock_from_forecast(
             skipped += 1
             continue
 
-        calculated_safety = round(need_before_buffer * buffer_rate / 100)
-        # Tối thiểu bằng 1 nếu có nhu cầu, tránh safety_stock = 0
+        calculated_safety = round(need_before_buffer * (1 + buffer_rate / 100))
         if need_before_buffer > 0 and calculated_safety < 1:
             calculated_safety = 1
 

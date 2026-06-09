@@ -153,17 +153,16 @@ class SupplyRecommendationService:
                 continue
 
             # Mục 6: Ngưỡng AT (Nhu cầu cuối) = Nhu cầu trước dự phòng × (1 + % dự phòng)
-            # Đây là safety_stock được tính tự động theo công thức
             calculated_safety_stock = round(need_before_buffer * (1 + buffer_rate / 100))
-            
-            # predicted_need giữ nguyên giá trị (bằng với calculated_safety_stock)
+
+            # Nhu cầu cuối = Ngưỡng AT (theo thiết lập: 2 con số bằng nhau)
             predicted_need = calculated_safety_stock
 
-            # Mục 7: Đề xuất nhập = max(0, Nhu cầu dự báo + Ngưỡng an toàn - Tồn kho hiện tại)
+            # Mục 7: Đề xuất nhập = max(0, Nhu cầu cuối − Tồn kho hiện tại)
             inv = self._get_inventory(sid)
             suggested_import = max(
                 0,
-                predicted_need + calculated_safety_stock - inv["current_stock"],
+                predicted_need - inv["current_stock"],
             )
 
             items.append({
@@ -285,11 +284,12 @@ class SupplyRecommendationService:
         # Tính suggested_import dựa trên total need
         agg_items: List[Dict[str, Any]] = []
         for sid, data in aggregated.items():
+            # Ngưỡng AT = Nhu cầu cuối (theo thiết lập)
+            data["safety_stock"] = data["predicted_need_total"]
+            # Đề xuất nhập = max(0, Nhu cầu cuối − Tồn kho)
             data["suggested_import"] = max(
                 0,
-                data["predicted_need_total"]
-                + data["safety_stock"]
-                - data["current_stock"],
+                data["predicted_need_total"] - data["current_stock"],
             )
             data["status"] = (
                 "shortage" if data["suggested_import"] > 0 else "sufficient"

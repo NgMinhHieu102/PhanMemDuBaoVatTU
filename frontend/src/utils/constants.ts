@@ -86,6 +86,7 @@ export const ROUTES = {
   WEATHER: '/weather',
   REPORTS: '/reports',
   SETTINGS: '/settings',
+  SUPPLY_NORMS: '/supply-norms',
 } as const;
 
 // App info

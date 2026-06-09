@@ -2,7 +2,7 @@
 import logging
 from typing import List, Optional, Any
 from fastapi import APIRouter, Depends, File, HTTPException, status, Request, Query, UploadFile
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user, get_inventory_manager_or_admin
@@ -138,7 +138,7 @@ async def sync_safety_stock_from_forecast(
     
     Logic:
     1. Lấy kết quả dự báo từ supply_recommendations cho tháng chỉ định
-    2. Tính calculated_safety_stock = need_before_buffer × (1 + buffer_rate/100)
+    2. Tính safety_stock = need_before_buffer × (buffer_rate/100)
     3. Cập nhật inventory.safety_stock cho các vật tư tương ứng
     
     Returns:
@@ -198,13 +198,11 @@ async def sync_safety_stock_from_forecast(
     from app.models.inventory import Inventory as InventoryModel
 
     for supply_id, need_before_buffer in supply_needs.items():
-        # Công thức ngưỡng AT đúng nghĩa:
-        #   safety_stock = nhu_cầu_1_ngày × lead_time_days × (1 + buffer/100)
-        # Mặc định lead_time = 7 ngày (thời gian chờ hàng về).
-        # Lấy lead_time từ MedicalSupply nếu có, ngược lại dùng 7.
+        # Ngưỡng AT = nhu cầu (trước dự phòng) × % dự phòng được thiết lập.
+        # Ví dụ: nhu cầu 4938, dự phòng 15% → AT = 741.
+        # AT là phần đệm an toàn, luôn nhỏ hơn "nhu cầu cuối".
         inv = (
             db.query(InventoryModel)
-            .options(joinedload(InventoryModel.supply))
             .filter(InventoryModel.supply_id == supply_id)
             .first()
         )
@@ -212,12 +210,7 @@ async def sync_safety_stock_from_forecast(
             skipped += 1
             continue
 
-        lead_time = 7  # days default
-        if inv.supply and inv.supply.lead_time_days:
-            lead_time = int(inv.supply.lead_time_days)
-
-        daily_need = need_before_buffer / 30  # phân bổ đều trong 30 ngày
-        calculated_safety = round(daily_need * lead_time * (1 + buffer_rate / 100))
+        calculated_safety = round(need_before_buffer * buffer_rate / 100)
         # Tối thiểu bằng 1 nếu có nhu cầu, tránh safety_stock = 0
         if need_before_buffer > 0 and calculated_safety < 1:
             calculated_safety = 1

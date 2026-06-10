@@ -16,6 +16,8 @@ export const epidemiologyService = {
     limit?: number;
     disease_type?: DiseaseType;
     location?: string;
+    start_date?: string;
+    end_date?: string;
   }): Promise<DiseaseCase[]> {
     // Trailing slash bắt buộc — nếu thiếu, backend trả 307 redirect và một số
     // môi trường (proxy/CORS) làm rớt query params hoặc Authorization header.

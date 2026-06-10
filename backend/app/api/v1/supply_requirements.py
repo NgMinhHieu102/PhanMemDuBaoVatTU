@@ -60,6 +60,7 @@ async def list_supply_requirements(
 @router.get("/summary", response_model=SupplyRequirementSummaryResponse)
 async def get_supply_requirements_summary(
     disease_type: Optional[str] = Query(None, description="Filter by disease type"),
+    category: Optional[str] = Query(None, description="Filter by supply category"),
     start_date: Optional[date] = Query(None, description="Filter by requirement date (start)"),
     end_date: Optional[date] = Query(None, description="Filter by requirement date (end)"),
     db: Session = Depends(get_db),
@@ -76,6 +77,7 @@ async def get_supply_requirements_summary(
         service = SupplyRequirementService(db)
         summary = service.get_summary(
             disease_type=disease_type,
+            category=category,
             start_date=start_date,
             end_date=end_date,
         )

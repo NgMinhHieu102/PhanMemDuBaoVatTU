@@ -343,7 +343,16 @@ class SupplyRecommendationService:
             if latest and latest.predicted_cases:
                 return int(latest.predicted_cases)
         else:
-            # Toàn quốc → lấy forecast mới nhất bất kể khu vực (tránh đếm trùng)
+            # Toàn quốc → ưu tiên lấy forecast có location=NULL (toàn thành phố/toàn quốc)
+            nationwide = (
+                base.filter(DiseaseForecast.location.is_(None))
+                .order_by(DiseaseForecast.created_at.desc())
+                .first()
+            )
+            if nationwide and nationwide.predicted_cases:
+                return int(nationwide.predicted_cases)
+            
+            # Fallback: lấy bản ghi mới nhất của bất kỳ khu vực nào
             latest = base.order_by(DiseaseForecast.created_at.desc()).first()
             if latest and latest.predicted_cases:
                 return int(latest.predicted_cases)

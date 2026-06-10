@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import extract, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -694,30 +694,24 @@ async def get_dashboard_summary(
         else 0.0
     )
 
-    # 2. Số ca dự báo - Lấy từ SupplyRecommendation (tháng mới nhất có dữ liệu)
-    # Tìm tháng dự báo gần nhất
-    latest_forecast_month = (
-        db.query(func.max(SupplyRecommendation.forecast_month))
+    # 2. Số ca dự báo - Lấy từ DiseaseForecast (tháng hiện tại, location=NULL)
+    # Lấy dự báo toàn quốc (location=NULL) của tháng hiện tại
+    predicted_next = (
+        db.query(func.coalesce(func.sum(DiseaseForecast.predicted_cases), 0))
+        .filter(
+            extract('year', DiseaseForecast.forecast_date) == today.year,
+            extract('month', DiseaseForecast.forecast_date) == today.month,
+            DiseaseForecast.location.is_(None)  # Chỉ lấy toàn quốc
+        )
         .scalar()
+        or 0
     )
     
-    if latest_forecast_month:
-        # Lấy tổng predicted_cases của tháng dự báo mới nhất
-        predicted_next = (
-            db.query(func.coalesce(func.sum(SupplyRecommendation.predicted_cases), 0))
-            .filter(SupplyRecommendation.forecast_month == latest_forecast_month)
-            .scalar()
-            or 0
-        )
-        predicted_trend_pct = (
-            round(100.0 * (predicted_next - total_current) / total_current, 1)
-            if total_current > 0
-            else 0.0
-        )
-    else:
-        # Không có dữ liệu dự báo
-        predicted_next = 0
-        predicted_trend_pct = 0.0
+    predicted_trend_pct = (
+        round(100.0 * (predicted_next - total_current) / total_current, 1)
+        if total_current > 0
+        else 0.0
+    )
 
     # 3. Số vật tư thiếu hụt (đồng bộ với logic "Cần nhập gấp" ở UI Inventory):
     #    Chỉ tính các vật tư đã có ngưỡng AT > 0 (đang được theo dõi).

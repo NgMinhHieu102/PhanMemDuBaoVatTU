@@ -110,17 +110,11 @@ export default function Epidemiology() {
   const loadData = async () => {
     setLoading(true);
     try {
-      // Build query params
+      // Tải toàn bộ dữ liệu rồi lọc ở client (theo icd_code + tên tỉnh đã
+      // chuẩn hoá). Không gửi disease_type/location lên backend vì backend
+      // so khớp tuyệt đối (disease_type luôn = 'respiratory', location lưu
+      // tên đầy đủ) → dễ lệch và trả về 0 dòng.
       const params: any = { limit: 50000 };
-      
-      // Add filters if they're set
-      if (selectedDisease && selectedDisease !== 'all') {
-        params.disease_type = selectedDisease;  // Sử dụng filter backend
-      }
-      if (selectedRegion && selectedRegion !== 'all') {
-        params.location = selectedRegion;  // Sử dụng filter backend
-      }
-      
       const data = await epidemiologyService.getDiseaseCases(params);
       setItems(data as any);
     } catch (err) {

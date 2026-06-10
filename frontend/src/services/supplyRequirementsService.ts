@@ -21,6 +21,7 @@ export interface SupplyRequirementSummaryResponse {
 export const supplyRequirementsService = {
   async getSummary(params?: {
     disease_type?: string;
+    category?: string;
     start_date?: string;
     end_date?: string;
   }): Promise<SupplyRequirementSummaryResponse> {

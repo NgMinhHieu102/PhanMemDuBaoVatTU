@@ -91,6 +91,7 @@ class SupplyRequirementService:
     def get_summary(
         self,
         disease_type: Optional[str] = None,
+        category: Optional[str] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
     ) -> Dict:
@@ -109,6 +110,8 @@ class SupplyRequirementService:
             query = query.filter(SupplyRequirement.requirement_date >= start_date)
         if end_date:
             query = query.filter(SupplyRequirement.requirement_date <= end_date)
+        if category:
+            query = query.join(MedicalSupply).filter(MedicalSupply.category == category)
 
         requirements = query.all()
 

@@ -30,23 +30,46 @@ def get_client_ip(request: Request) -> str:
 def list_disease_cases(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1),  # Bỏ giới hạn tối đa
-    disease_type: Optional[str] = Query(None, description="Filter by disease type"),
+    disease_type: Optional[str] = Query(None, description="Filter by ICD code (J20, J06, J02, J01)"),
     location: Optional[str] = Query(None, description="Filter by location (Tỉnh/Thành)"),
+    start_date: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD format)"),
+    end_date: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD format)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ) -> Any:
     """
     List disease case records.
 
-    Supports filtering by disease type and location (Tỉnh/Thành).
+    Supports filtering by ICD code (J20, J06, J02, J01), location (Tỉnh/Thành), and date range.
     """
     from app.models.disease_case import DiseaseCase
 
     q = db.query(DiseaseCase)
     if disease_type:
-        q = q.filter(DiseaseCase.disease_type == disease_type)
+        q = q.filter(DiseaseCase.icd_code == disease_type)
     if location:
         q = q.filter(DiseaseCase.location == location)
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            q = q.filter(DiseaseCase.recorded_at >= start_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid start_date format: {start_date}. Expected YYYY-MM-DD."
+            )
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date)
+            # Add 1 day and subtract 1 second to include the entire end date
+            from datetime import timedelta
+            end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
+            q = q.filter(DiseaseCase.recorded_at <= end_dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid end_date format: {end_date}. Expected YYYY-MM-DD."
+            )
     return (
         q.order_by(DiseaseCase.recorded_at.desc())
         .offset(skip)

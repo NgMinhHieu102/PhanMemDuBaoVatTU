@@ -15,6 +15,7 @@ import {
 import { useInventory } from '../hooks/useInventory';
 import { epidemiologyService } from '../services/epidemiologyService';
 import { reportsService } from '../services/reportsService';
+import { supplyRecommendationService } from '../services/supplyRecommendationService';
 import { SUPPLY_CATEGORY_LABELS } from '../utils/constants';
 import ReportTypePicker, {
   type ReportKind,
@@ -31,20 +32,15 @@ export default function Reports() {
     setPageTitle('Báo cáo');
   }, [setPageTitle]);
 
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const start30 = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
-  }, []);
-
   const [kind, setKind] = useState<ReportKind>('epidemic');
   const [filters, setFilters] = useState<ReportFilterState>({
-    startDate: start30,
-    endDate: today,
+    search: '',
+    startMonth: '',
+    endMonth: '',
     diseaseType: 'all',
     region: 'all',
     category: 'all',
+    status: 'all',
   });
 
   // Data sources (chỉ fetch khi cần)
@@ -53,32 +49,41 @@ export default function Reports() {
 
   const consumption = useConsumptionReport(
     kind === 'inventory' || kind === 'shortage' || kind === 'procurement'
-      ? {
-          start_date: filters.startDate,
-          end_date: filters.endDate,
-          category: filters.category !== 'all' ? filters.category : undefined,
-        }
+      ? {}
       : undefined,
   );
 
   const accuracy = useForecastAccuracyReport(
     kind === 'accuracy'
       ? {
-          start_date: filters.startDate,
-          end_date: filters.endDate,
           disease_type:
             filters.diseaseType !== 'all' ? filters.diseaseType : undefined,
         }
       : undefined,
   );
 
+  const procurement = useQuery({
+    queryKey: ['supply-recommendations', 'procurement-report', filters.category, filters.diseaseType],
+    queryFn: () => {
+      // Sử dụng cùng service như trang Alerts
+      const currentDate = new Date();
+      const forecastMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-01`;
+      
+      return supplyRecommendationService.calculateForMonth({
+        forecast_month: forecastMonth,
+        buffer_rate: 15, // Mặc định 15% như trang Alerts
+      });
+    },
+    enabled: kind === 'procurement',
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
   const requirements = useSupplyRequirementsSummary(
-    kind === 'shortage' || kind === 'procurement'
+    kind === 'shortage'
       ? {
           disease_type:
             filters.diseaseType !== 'all' ? filters.diseaseType : undefined,
-          start_date: filters.startDate,
-          end_date: filters.endDate,
         }
       : undefined,
   );
@@ -94,8 +99,13 @@ export default function Reports() {
           disease_type:
             filters.diseaseType !== 'all' ? filters.diseaseType : undefined,
           region: filters.region !== 'all' ? filters.region : undefined,
-          start_date: filters.startDate || undefined,
-          end_date: filters.endDate || undefined,
+          start_date: filters.startMonth ? `${filters.startMonth}-01` : undefined,
+          end_date: filters.endMonth ? (() => {
+            const endDate = new Date(filters.endMonth + '-01');
+            endDate.setMonth(endDate.getMonth() + 1);
+            endDate.setDate(0); // Last day of the month
+            return endDate.toISOString().split('T')[0];
+          })() : undefined,
         }
       : undefined,
   );
@@ -103,16 +113,32 @@ export default function Reports() {
   // Báo cáo "Tình hình dịch bệnh" lấy SỐ CA THẬT từ disease_cases (đã import),
   // không phải từ bảng dự báo.
   const diseaseCases = useQuery({
-    queryKey: ['report-disease-cases', filters.diseaseType, filters.region],
-    queryFn: () =>
-      epidemiologyService.getDiseaseCases({
+    queryKey: ['report-disease-cases', filters.diseaseType, filters.region, filters.startMonth, filters.endMonth],
+    queryFn: () => {
+      // Convert month filters to date range
+      const params: any = {
         limit: 50000,
         disease_type:
           filters.diseaseType !== 'all'
             ? (filters.diseaseType as any)
             : undefined,
         location: filters.region !== 'all' ? filters.region : undefined,
-      }),
+      };
+
+      // Add date range if months are specified
+      if (filters.startMonth) {
+        params.start_date = `${filters.startMonth}-01`;
+      }
+      if (filters.endMonth) {
+        // Set to last day of end month
+        const endDate = new Date(filters.endMonth + '-01');
+        endDate.setMonth(endDate.getMonth() + 1);
+        endDate.setDate(0); // Last day of previous month
+        params.end_date = endDate.toISOString().split('T')[0];
+      }
+
+      return epidemiologyService.getDiseaseCases(params);
+    },
     enabled: kind === 'epidemic',
     retry: false,
     refetchOnWindowFocus: false,
@@ -127,7 +153,6 @@ export default function Reports() {
     [],
   );
 
-  const periodLabel = `${formatDate(filters.startDate)} → ${formatDate(filters.endDate)}`;
   const filtersLabel = buildFiltersLabel(kind, filters, diseases);
 
   const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
@@ -140,15 +165,12 @@ export default function Reports() {
       const blob = await reportsService.exportReport({
         report_type: backendType as any,
         format,
-        start_date: filters.startDate,
-        end_date: filters.endDate,
         disease_type:
           filters.diseaseType !== 'all' ? filters.diseaseType : undefined,
         location: filters.region !== 'all' ? filters.region : undefined,
-        category: filters.category !== 'all' ? filters.category : undefined,
       } as any);
       const ext = format === 'pdf' ? 'pdf' : 'xlsx';
-      triggerDownload(blob, `${kind}-${filters.startDate}-${filters.endDate}.${ext}`);
+      triggerDownload(blob, `${kind}-report.${ext}`);
     } catch (err) {
       console.error(err);
       alert('Không thể xuất báo cáo. Vui lòng thử lại.');
@@ -161,21 +183,22 @@ export default function Reports() {
   const preview = useMemo(() => {
     switch (kind) {
       case 'epidemic':
-        return buildEpidemicPreview(
-          diseaseCases.data ?? [],
-          filters.startDate,
-          filters.endDate,
-        );
+        return buildEpidemicPreview(diseaseCases.data ?? []);
       case 'forecast':
-        return buildForecastPreview(forecastHistory.data ?? []);
+        return buildForecastPreview(
+          forecastHistory.data ?? [],
+          filters.region,
+          filters.startMonth,
+          filters.endMonth,
+        );
       case 'inventory':
-        return buildInventoryPreview(inventory.data ?? []);
+        return buildInventoryPreview(inventory.data ?? [], filters.status, filters.search);
       case 'shortage':
-        return buildShortagePreview(requirements.data?.items ?? []);
+        return buildShortagePreview(requirements.data?.items ?? [], filters.search);
       case 'procurement':
-        return buildProcurementPreview(requirements.data?.items ?? []);
+        return buildProcurementPreview(procurement.data, filters.search);
       case 'accuracy':
-        return buildAccuracyPreview(accuracy.data, forecastHistory.data ?? []);
+        return buildAccuracyPreview(accuracy.data, forecastHistory.data ?? [], filters.search);
     }
   }, [
     kind,
@@ -185,13 +208,18 @@ export default function Reports() {
     inventory.data,
     forecastHistory.data,
     diseaseCases.data,
-    filters.startDate,
-    filters.endDate,
+    procurement.data,
+    filters.region,
+    filters.status,
+    filters.search,
+    filters.startMonth,
+    filters.endMonth,
   ]);
 
   const isLoading =
     (kind === 'inventory' && inventory.isLoading) ||
-    ((kind === 'shortage' || kind === 'procurement') && requirements.isLoading) ||
+    (kind === 'shortage' && requirements.isLoading) ||
+    (kind === 'procurement' && procurement.isLoading) ||
     (kind === 'accuracy' && accuracy.isLoading) ||
     (kind === 'forecast' && forecastHistory.isLoading) ||
     (kind === 'epidemic' && diseaseCases.isLoading);
@@ -245,7 +273,6 @@ export default function Reports() {
           onChange={setFilters}
           diseases={diseases}
           regions={regions}
-          categories={categoryOptions}
         />
       </Section>
 
@@ -258,7 +285,7 @@ export default function Reports() {
           metrics={preview.metrics}
           sections={preview.sections}
           generatedAt={new Date().toLocaleString('vi-VN')}
-          periodLabel={periodLabel}
+          periodLabel=""
           filtersLabel={filtersLabel}
         />
       </Section>
@@ -295,18 +322,29 @@ function Section({
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function formatDate(d: string): string {
-  if (!d) return '—';
-  const [y, m, day] = d.split('-');
-  return `${day}/${m}/${y}`;
-}
-
 function buildFiltersLabel(
   kind: ReportKind,
   f: ReportFilterState,
   diseases: { key: string; label: string }[],
 ): string {
   const parts: string[] = [];
+  
+  // Thêm search query nếu có (cho các báo cáo không sử dụng month filters)
+  if (kind !== 'epidemic' && kind !== 'forecast' && f.search && f.search.trim()) {
+    parts.push(`"${f.search.trim()}"`);
+  }
+  
+  // Thêm thông tin tháng cho epidemic và forecast
+  if ((kind === 'epidemic' || kind === 'forecast') && (f.startMonth || f.endMonth)) {
+    if (f.startMonth && f.endMonth) {
+      parts.push(`${formatMonth(f.startMonth)} → ${formatMonth(f.endMonth)}`);
+    } else if (f.startMonth) {
+      parts.push(`Từ ${formatMonth(f.startMonth)}`);
+    } else if (f.endMonth) {
+      parts.push(`Đến ${formatMonth(f.endMonth)}`);
+    }
+  }
+  
   if (['epidemic', 'forecast', 'accuracy'].includes(kind)) {
     const d =
       f.diseaseType === 'all'
@@ -317,14 +355,21 @@ function buildFiltersLabel(
   if (['epidemic', 'forecast'].includes(kind)) {
     parts.push(f.region === 'all' ? 'Toàn thành phố' : f.region);
   }
-  if (['inventory', 'shortage', 'procurement'].includes(kind)) {
-    parts.push(
-      f.category === 'all'
-        ? 'Tất cả nhóm'
-        : SUPPLY_CATEGORY_LABELS[f.category] ?? f.category,
-    );
+  if (kind === 'inventory' && f.status !== 'all') {
+    const statusLabels: Record<string, string> = {
+      normal: 'An toàn',
+      low: 'Dưới ngưỡng',
+      critical: 'Cần nhập gấp',
+    };
+    parts.push(statusLabels[f.status] ?? f.status);
   }
   return parts.join(' • ') || '—';
+}
+
+function formatMonth(monthStr: string): string {
+  if (!monthStr) return '';
+  const [year, month] = monthStr.split('-');
+  return `${month}/${year}`;
 }
 
 function triggerDownload(blob: Blob, filename: string) {
@@ -356,27 +401,15 @@ interface PreviewBundle {
 
 function buildEpidemicPreview(
   cases: any[],
-  startDate?: string,
-  endDate?: string,
 ): PreviewBundle {
-  // Lọc theo khoảng thời gian (recorded_at) phía client
-  const from = startDate ? new Date(`${startDate}T00:00:00`) : null;
-  const to = endDate ? new Date(`${endDate}T23:59:59`) : null;
-  const filtered = cases.filter((c) => {
-    const d = new Date(c.recorded_at);
-    if (from && d < from) return false;
-    if (to && d > to) return false;
-    return true;
-  });
-
-  const totalActual = filtered.reduce(
+  const totalActual = cases.reduce(
     (acc, c) => acc + (c.case_count ?? 0),
     0,
   );
   const monthsCovered = new Set(
-    filtered.map((c) => (c.recorded_at ?? '').slice(0, 7)),
+    cases.map((c) => (c.recorded_at ?? '').slice(0, 7)),
   ).size;
-  const diseasesCount = new Set(filtered.map((c) => c.icd_code)).size;
+  const diseasesCount = new Set(cases.map((c) => c.icd_code)).size;
 
   const monthLabel = (iso: string) => {
     const d = new Date(iso);
@@ -384,7 +417,7 @@ function buildEpidemicPreview(
   };
 
   // Sắp xếp mới nhất trước
-  const sorted = [...filtered].sort(
+  const sorted = [...cases].sort(
     (a, b) =>
       new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime(),
   );
@@ -419,9 +452,29 @@ function buildEpidemicPreview(
   };
 }
 
-function buildForecastPreview(history: any[]): PreviewBundle {
-  const total = history.reduce((acc, r) => acc + (r.predicted_cases ?? 0), 0);
-  const high = history.filter((r) => r.risk_level === 'high' || r.risk_level === 'very_high')
+function buildForecastPreview(
+  history: any[], 
+  selectedRegion?: string, 
+  startMonth?: string,
+  endMonth?: string
+): PreviewBundle {
+  // Lọc theo region được chọn
+  let filtered = history;
+  if (!selectedRegion || selectedRegion === 'all') {
+    // Nếu chọn "Tất cả" → chỉ lấy dự báo toàn quốc để tránh đếm trùng
+    filtered = history.filter((r) => 
+      !r.region || r.region === 'Toàn thành phố' || r.region === 'Toàn quốc'
+    );
+  } else {
+    // Nếu chọn khu vực cụ thể → lấy đúng khu vực đó
+    filtered = history.filter((r) => r.region === selectedRegion);
+  }
+  
+  // Note: Date filtering đã được xử lý ở backend level qua API call
+  // Không cần client-side filtering cho date nữa
+  
+  const total = filtered.reduce((acc, r) => acc + (r.predicted_cases ?? 0), 0);
+  const high = filtered.filter((r) => r.risk_level === 'high' || r.risk_level === 'very_high')
     .length;
 
   return {
@@ -429,10 +482,11 @@ function buildForecastPreview(history: any[]): PreviewBundle {
       {
         label: 'Tổng số ca dự báo',
         value: total.toLocaleString('vi-VN'),
+        hint: !selectedRegion || selectedRegion === 'all' ? 'Toàn thành phố' : selectedRegion,
       },
       {
         label: 'Số kỳ dự báo',
-        value: history.length,
+        value: filtered.length,
       },
       {
         label: 'Mức nguy cơ cao trở lên',
@@ -450,10 +504,10 @@ function buildForecastPreview(history: any[]): PreviewBundle {
           { key: 'predicted_cases', label: 'Số ca dự báo', align: 'right' },
           { key: 'risk_level', label: 'Mức nguy cơ' },
         ],
-        rows: history.map((r) => ({
+        rows: filtered.map((r) => ({
           month: `Tháng ${r.month}`,
           disease_label: r.disease_label,
-          region: r.region,
+          region: r.region || 'Toàn thành phố',
           predicted_cases: r.predicted_cases.toLocaleString('vi-VN'),
           risk_level: vietnameseRisk(r.risk_level),
         })),
@@ -462,16 +516,53 @@ function buildForecastPreview(history: any[]): PreviewBundle {
   };
 }
 
-function buildInventoryPreview(items: any[]): PreviewBundle {
-  const safe = items.filter(
-    (i) => (i.current_stock ?? 0) > (i.safety_stock ?? 0),
-  ).length;
-  const low = items.filter(
-    (i) =>
-      (i.current_stock ?? 0) > 0 &&
-      (i.current_stock ?? 0) <= (i.safety_stock ?? 0),
-  ).length;
-  const critical = items.filter((i) => (i.current_stock ?? 0) <= 0).length;
+function buildInventoryPreview(items: any[], statusFilter?: string, searchQuery?: string): PreviewBundle {
+  // Helper function để classify status
+  const classify = (cs: number, ss: number): 'normal' | 'low' | 'critical' => {
+    if (ss <= 0) return 'normal';
+    if (cs <= 0 || cs < ss * 0.3) return 'critical';
+    if (cs <= ss) return 'low';
+    return 'normal';
+  };
+
+  // Áp dụng filter theo status
+  let filtered = items;
+  if (statusFilter && statusFilter !== 'all') {
+    filtered = items.filter((i) => {
+      const cs = i.current_stock ?? 0;
+      const ss = i.safety_stock ?? 0;
+      return classify(cs, ss) === statusFilter;
+    });
+  }
+
+  // Lọc theo thanh tìm kiếm
+  if (searchQuery && searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    filtered = filtered.filter((i) => {
+      const name = (i.supply?.ten_hoat_chat || i.supply?.name || '').toLowerCase();
+      const category = (SUPPLY_CATEGORY_LABELS[i.supply?.category] || i.supply?.category || '').toLowerCase();
+      return name.includes(q) || category.includes(q);
+    });
+  }
+
+  // Đếm theo trạng thái (từ items gốc, không filter)
+  const safe = items.filter((i) => {
+    const cs = i.current_stock ?? 0;
+    const ss = i.safety_stock ?? 0;
+    return classify(cs, ss) === 'normal';
+  }).length;
+  
+  const low = items.filter((i) => {
+    const cs = i.current_stock ?? 0;
+    const ss = i.safety_stock ?? 0;
+    return classify(cs, ss) === 'low';
+  }).length;
+  
+  const critical = items.filter((i) => {
+    const cs = i.current_stock ?? 0;
+    const ss = i.safety_stock ?? 0;
+    return classify(cs, ss) === 'critical';
+  }).length;
 
   return {
     metrics: [
@@ -490,7 +581,7 @@ function buildInventoryPreview(items: any[]): PreviewBundle {
           { key: 'current_stock', label: 'Tồn kho', align: 'right' },
           { key: 'safety_stock', label: 'Ngưỡng AT', align: 'right' },
         ],
-        rows: items.map((i: any) => ({
+        rows: filtered.map((i: any) => ({
           name: i.supply?.ten_hoat_chat ?? i.supply?.name ?? '—',
           category:
             SUPPLY_CATEGORY_LABELS[i.supply?.category] ??
@@ -505,8 +596,18 @@ function buildInventoryPreview(items: any[]): PreviewBundle {
   };
 }
 
-function buildShortagePreview(items: any[]): PreviewBundle {
-  const shortageItems = items.filter((i) => (i.shortage_amount ?? 0) > 0);
+function buildShortagePreview(items: any[], searchQuery?: string): PreviewBundle {
+  let shortageItems = items.filter((i) => (i.shortage_amount ?? 0) > 0);
+  
+  // Lọc theo thanh tìm kiếm
+  if (searchQuery && searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    shortageItems = shortageItems.filter((i) => {
+      const name = (i.supply_name || '').toLowerCase();
+      return name.includes(q);
+    });
+  }
+  
   const totalShortage = shortageItems.reduce(
     (acc, i) => acc + (i.shortage_amount ?? 0),
     0,
@@ -542,25 +643,39 @@ function buildShortagePreview(items: any[]): PreviewBundle {
   };
 }
 
-function buildProcurementPreview(items: any[]): PreviewBundle {
-  const SAFETY = 0.15;
-  const rows = items
-    .map((i: any) => {
-      const stock = i.current_stock ?? 0;
-      const demand = i.total_required_quantity ?? 0;
-      const recommended = Math.max(0, demand + Math.round(demand * SAFETY) - stock);
-      return { i, recommended, stock, demand };
-    })
-    .filter((r) => r.recommended > 0);
+function buildProcurementPreview(data: any, searchQuery?: string): PreviewBundle {
+  if (!data || !data.items) {
+    return {
+      metrics: [
+        { label: 'Số vật tư cần nhập', value: 0, tone: 'warning' },
+        { label: 'Tổng số lượng đề xuất', value: 0 },
+      ],
+      sections: [],
+    };
+  }
 
-  const totalOrder = rows.reduce((acc, r) => acc + r.recommended, 0);
+  // Lọc theo thanh tìm kiếm
+  let items = data.items;
+  if (searchQuery && searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    items = data.items.filter((i: any) => {
+      const name = (i.ten_hoat_chat || '').toLowerCase();
+      const code = (i.supply_code || '').toLowerCase();
+      const group = (i.group_name || '').toLowerCase();
+      return name.includes(q) || code.includes(q) || group.includes(q);
+    });
+  }
+
+  // Chỉ lấy các vật tư cần nhập (suggested_import > 0)
+  const needImportItems = items.filter((i: any) => (i.suggested_import ?? 0) > 0);
+  const totalOrder = needImportItems.reduce((acc: number, i: any) => acc + (i.suggested_import ?? 0), 0);
 
   return {
     metrics: [
-      { label: 'Số vật tư cần nhập', value: rows.length, tone: 'warning' },
+      { label: 'Số vật tư cần nhập', value: needImportItems.length, tone: 'warning' },
       {
         label: 'Tổng số lượng đề xuất',
-        value: totalOrder.toLocaleString('vi-VN'),
+        value: totalOrder,
       },
     ],
     sections: [
@@ -569,24 +684,34 @@ function buildProcurementPreview(items: any[]): PreviewBundle {
         columns: [
           { key: 'name', label: 'Tên vật tư' },
           { key: 'unit', label: 'ĐVT' },
-          { key: 'demand', label: 'Nhu cầu', align: 'right' },
+          { key: 'demand', label: 'Nhu cầu dự báo', align: 'right' },
           { key: 'stock', label: 'Tồn hiện tại', align: 'right' },
-          { key: 'recommended', label: 'SL đề xuất', align: 'right' },
+          { key: 'recommended', label: 'SL đề xuất nhập', align: 'right' },
         ],
-        rows: rows.map(({ i, recommended, stock, demand }) => ({
-          name: i.supply_name,
-          unit: i.supply_unit ?? '',
-          demand: demand.toLocaleString('vi-VN'),
-          stock: stock.toLocaleString('vi-VN'),
-          recommended: recommended.toLocaleString('vi-VN'),
+        rows: needImportItems.map((i: any) => ({
+          name: i.ten_hoat_chat || '—',
+          unit: i.unit ?? '',
+          demand: (i.predicted_need_total ?? 0).toLocaleString('vi-VN'),
+          stock: (i.current_stock ?? 0).toLocaleString('vi-VN'),
+          recommended: (i.suggested_import ?? 0).toLocaleString('vi-VN'),
         })),
       },
     ],
   };
 }
 
-function buildAccuracyPreview(_accuracy: any, history: any[]): PreviewBundle {
-  const withActual = history.filter((r) => r.deviation_pct !== null);
+function buildAccuracyPreview(_accuracy: any, history: any[], searchQuery?: string): PreviewBundle {
+  let withActual = history.filter((r) => r.deviation_pct !== null);
+  
+  // Lọc theo thanh tìm kiếm
+  if (searchQuery && searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    withActual = withActual.filter((r) => {
+      const diseaseName = (r.disease_label || '').toLowerCase();
+      return diseaseName.includes(q);
+    });
+  }
+  
   const avgDeviation =
     withActual.length === 0
       ? 0
